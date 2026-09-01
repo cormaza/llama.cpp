@@ -180,7 +180,14 @@ if (CUDAToolkit_FOUND)
         if (GGML_CUDA_CUB_3DOT2)
             target_link_libraries(ggml-cuda PRIVATE  CCCL::CCCL)
         endif()
-        target_link_libraries(ggml-cuda PRIVATE CUDA::cudart CUDA::cublas)
+        target_link_libraries(ggml-cuda PUBLIC CUDA::cudart CUDA::cublas)
+    endif()
+
+    if (DEFINED CUDAToolkit_LIBRARY_DIR)
+        set_target_properties(ggml-cuda PROPERTIES
+            BUILD_RPATH "${CUDAToolkit_LIBRARY_DIR}"
+            INSTALL_RPATH "${CUDAToolkit_LIBRARY_DIR}"
+        )
     endif()
 
     if (GGML_CUDA_NO_VMM)
@@ -201,14 +208,18 @@ if (CUDAToolkit_FOUND)
 
     set(CUDA_CXX_FLAGS "")
 
-    set(CUDA_FLAGS -use_fast_math -extended-lambda)
+    if (CMAKE_CUDA_COMPILER_ID MATCHES "Clang")
+        set(CUDA_FLAGS -ffast-math -Wno-unknown-cuda-version)
+    else()
+        set(CUDA_FLAGS -use_fast_math -extended-lambda)
+    endif()
 
     if (GGML_CUDA_DEBUG)
         list(APPEND CUDA_FLAGS -lineinfo)
         add_compile_definitions(GGML_CUDA_DEBUG)
     endif()
 
-    if (CUDAToolkit_VERSION VERSION_GREATER_EQUAL "12.8")
+    if (CUDAToolkit_VERSION VERSION_GREATER_EQUAL "12.8" AND NOT CMAKE_CUDA_COMPILER_ID MATCHES "Clang")
         # Options are:
         # - none (not recommended)
         # - speed (nvcc's default)
@@ -267,7 +278,11 @@ if (CUDAToolkit_FOUND)
     list(JOIN   CUDA_CXX_FLAGS " " CUDA_CXX_FLAGS_JOINED)  # pass host compiler flags as a single argument
 
     if (NOT CUDA_CXX_FLAGS_JOINED STREQUAL "")
-        list(APPEND CUDA_FLAGS -Xcompiler ${CUDA_CXX_FLAGS_JOINED})
+        if (CMAKE_CUDA_COMPILER_ID MATCHES "Clang")
+            list(APPEND CUDA_FLAGS ${CUDA_CXX_FLAGS})
+        else()
+            list(APPEND CUDA_FLAGS -Xcompiler ${CUDA_CXX_FLAGS_JOINED})
+        endif()
     endif()
 
     target_compile_options(ggml-cuda PRIVATE "$<$<COMPILE_LANGUAGE:CUDA>:${CUDA_FLAGS}>")

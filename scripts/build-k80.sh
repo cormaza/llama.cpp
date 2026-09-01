@@ -248,9 +248,16 @@ HOST_COMPILER=""
 HOST_CMAKE_ARGS=()
 if HOST_COMPILER=$(find_host_compiler); then
     log_success "Found compatible host compiler for nvcc: ${HOST_COMPILER}"
+    CUDA_COMPILER="${NVCC_BIN}"
     HOST_CMAKE_ARGS+=("-DCMAKE_CUDA_HOST_COMPILER=${HOST_COMPILER}")
+    CUDA_FLAGS="-allow-unsupported-compiler"
+elif command -v clang++ &>/dev/null; then
+    log_success "Using Clang as CUDA compiler: $(command -v clang++)"
+    CUDA_COMPILER="$(command -v clang++)"
+    CUDA_FLAGS="--cuda-path=${CUDA_DIR} -Wno-unknown-cuda-version"
 else
-    log_info "No separate gcc-11/gcc-10 found. Will test system default host compiler."
+    CUDA_COMPILER="${NVCC_BIN}"
+    CUDA_FLAGS="-allow-unsupported-compiler"
 fi
 
 log_step "4. Configuring CMake"
@@ -269,9 +276,11 @@ CMAKE_FLAGS=(
     "-DGGML_CUDA=ON"
     "-DGGML_CUDA_K80=ON"
     "-DCMAKE_CUDA_ARCHITECTURES=37"
-    "-DCMAKE_CUDA_COMPILER=${NVCC_BIN}"
+    "-DCMAKE_CUDA_COMPILER=${CUDA_COMPILER}"
     "-DCUDAToolkit_ROOT=${CUDA_DIR}"
-    "-DCMAKE_CUDA_FLAGS=-allow-unsupported-compiler"
+    "-DCMAKE_CUDA_FLAGS=${CUDA_FLAGS}"
+    "-DCMAKE_INSTALL_RPATH=${CUDA_DIR}/lib64"
+    "-DCMAKE_BUILD_RPATH=${CUDA_DIR}/lib64"
     "-DGGML_CUDA_PEER_MAX_BATCH_SIZE=128"
 )
 
@@ -357,7 +366,7 @@ K80_BASE_ARGS=(
     "--tensor-split" "0.5,0.5"
     "-ctk" "q8_0"
     "-ctv" "q8_0"
-    "-fa"
+    "-fa" "auto"
 )
 
 case "${MODE}" in

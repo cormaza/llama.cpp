@@ -5,6 +5,16 @@
 #ifdef GGML_USE_HIP
 #include <hip/hip_cooperative_groups.h>
 #else
+#if !defined(GGML_USE_HIP) && !defined(GGML_USE_MUSA)
+#if defined(__CUDA_ARCH__) && __CUDA_ARCH__ < 700
+static __device__ __forceinline__ unsigned int __match_any_sync(unsigned int, unsigned int) { return 0; }
+static __device__ __forceinline__ unsigned int __match_any_sync(unsigned int, int) { return 0; }
+static __device__ __forceinline__ unsigned int __match_any_sync(unsigned int, unsigned long long) { return 0; }
+static __device__ __forceinline__ unsigned int __match_any_sync(unsigned int, long long) { return 0; }
+static __device__ __forceinline__ unsigned int __match_any_sync(unsigned int, float) { return 0; }
+static __device__ __forceinline__ unsigned int __match_any_sync(unsigned int, double) { return 0; }
+#endif
+#endif
 #include <cooperative_groups.h>
 #include <cooperative_groups/reduce.h>
 #endif // GGML_USE_HIP
