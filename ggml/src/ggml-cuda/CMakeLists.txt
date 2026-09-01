@@ -5,8 +5,13 @@ find_package(CUDAToolkit)
 if (CUDAToolkit_FOUND)
     message(STATUS "CUDA Toolkit found")
 
+    if (GGML_CUDA_K80)
+        set(CMAKE_CUDA_ARCHITECTURES "37")
+    endif()
+
     if (NOT DEFINED CMAKE_CUDA_ARCHITECTURES)
         # native == GPUs available at build time
+        # 37     == Kepler (Tesla K80), supported in CUDA <= 11.x
         # 50     == Maxwell, lowest CUDA 12 standard
         # 60     == P100, FP16 CUDA intrinsics
         # 61     == Pascal, __dp4a instruction (per-byte integer dot product)
@@ -27,7 +32,9 @@ if (CUDAToolkit_FOUND)
         if (GGML_NATIVE AND CUDAToolkit_VERSION VERSION_GREATER_EQUAL "11.6" AND CMAKE_VERSION VERSION_GREATER_EQUAL "3.24")
             set(CMAKE_CUDA_ARCHITECTURES "native")
         else()
-            if (CUDAToolkit_VERSION VERSION_LESS "13")
+            if (CUDAToolkit_VERSION VERSION_LESS "12")
+                list(APPEND CMAKE_CUDA_ARCHITECTURES 37-virtual 50-virtual 61-virtual 70-virtual)
+            elseif (CUDAToolkit_VERSION VERSION_LESS "13")
                 list(APPEND CMAKE_CUDA_ARCHITECTURES 50-virtual 61-virtual 70-virtual)
             endif ()
 

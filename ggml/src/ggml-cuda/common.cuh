@@ -47,6 +47,9 @@
 #define CUDART_HMAX   11070 // CUDA 11.7, min. ver. for which __hmax and __hmax2 are known to work (may be higher than needed)
 #define CUDART_HMASK  12000 // CUDA 12.0, min. ver. for half2 -> uint mask comparisons
 
+#define GGML_CUDA_CC_KEPLER          350
+#define GGML_CUDA_CC_KEPLER_K80      370
+#define GGML_CUDA_CC_MAXWELL         500
 #define GGML_CUDA_CC_PASCAL          600
 #define GGML_CUDA_CC_DP4A            610 // minimum compute capability for __dp4a, an intrinsic for byte-wise dot products
 #define GGML_CUDA_CC_VOLTA           700
