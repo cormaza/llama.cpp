@@ -179,25 +179,33 @@ else
     case "${INSTALL_CHOICE}" in
         1)
             log_step "Downloading and installing CUDA 11.4.4 Toolkit..."
-            DOWNLOAD_TMP="${ROOT_DIR}/.cuda_install_tmp"
+            DOWNLOAD_TMP="${HOME}/.cache/cuda_k80_install_tmp"
             mkdir -p "${DOWNLOAD_TMP}"
             mkdir -p "${CUDA_TARGET_DIR}"
 
             RUNFILE="${DOWNLOAD_TMP}/${CUDA_RUNFILE_NAME}"
-            if [[ ! -f "${RUNFILE}" ]]; then
-                log_info "Downloading CUDA 11.4.4 runfile from NVIDIA (~2.5GB)..."
-                curl -L "${CUDA_RUNFILE_URL}" -o "${RUNFILE}" --progress-bar
+            if [[ ! -s "${RUNFILE}" ]]; then
+                log_info "Downloading CUDA 11.4.4 runfile from NVIDIA (~3.8GB)..."
+                curl -L -C - "${CUDA_RUNFILE_URL}" -o "${RUNFILE}" --progress-bar
             else
                 log_info "Found cached runfile at ${RUNFILE}"
+            fi
+
+            if [[ ! -s "${RUNFILE}" ]]; then
+                log_error "Failed to download CUDA runfile or file is empty."
+                exit 1
             fi
 
             chmod +x "${RUNFILE}"
             log_info "Extracting toolkit components into ${CUDA_TARGET_DIR}..."
             "${RUNFILE}" --silent --toolkit --toolkitpath="${CUDA_TARGET_DIR}" --override
 
-            rm -rf "${DOWNLOAD_TMP}"
             CUDA_DIR="${CUDA_TARGET_DIR}"
             NVCC_BIN="${CUDA_DIR}/bin/nvcc"
+            if [[ ! -x "${NVCC_BIN}" ]]; then
+                log_error "Installation failed: nvcc not found at ${NVCC_BIN}"
+                exit 1
+            fi
             log_success "CUDA 11.4 Toolkit installed successfully at ${CUDA_DIR}"
             ;;
         2)
@@ -263,6 +271,7 @@ CMAKE_FLAGS=(
     "-DCMAKE_CUDA_ARCHITECTURES=37"
     "-DCMAKE_CUDA_COMPILER=${NVCC_BIN}"
     "-DCUDAToolkit_ROOT=${CUDA_DIR}"
+    "-DCMAKE_CUDA_FLAGS=-allow-unsupported-compiler"
     "-DGGML_CUDA_PEER_MAX_BATCH_SIZE=128"
 )
 
@@ -304,15 +313,24 @@ fi
 
 show_usage() {
     cat << EOF
-Tesla K80 Runner
+Tesla K80 Runner (Optimized for 2x GK210, 24GB total VRAM)
 Usage:
   ./run-k80.sh cli -m <path_to_model.gguf> -p "Prompt here" [extra args...]
   ./run-k80.sh server -m <path_to_model.gguf> --port 8080 [extra args...]
+  ./run-k80.sh tune-gpu   (Sets GPU persistence mode, maximum boost clocks and power limit)
 
 Default flags applied for Tesla K80:
-  -ngl 99                (Offload all possible layers to GPU)
-  --split-mode row       (Split tensors across both K80 GPU dies: 12GB + 12GB = 24GB total VRAM)
-  --tensor-split 0.5,0.5 (Equal load distribution between GPU 0 and GPU 1)
+  -ngl 99                (Offload all layers to GPUs)
+  --split-mode layer     (Pipeline parallelism across GPU 0 and GPU 1; minimizes PCIe 3.0 traffic)
+  --tensor-split 0.5,0.5 (Equal layer distribution between the two 12GB dies)
+  -ctk q8_0 -ctv q8_0    (Quantized KV cache: halves VRAM bandwidth consumption)
+  -fa                    (FlashAttention tile kernels)
+
+Acceleration techniques available:
+  1. Speculative Decoding (DSpark / DFlash):
+     ./run-k80.sh cli -m target.gguf -md draft_dspark.gguf --spec-type draft-dspark -p "Prompt"
+  2. N-Gram / Prompt Lookup (0 extra VRAM, great for code/chat):
+     ./run-k80.sh cli -m target.gguf --spec-type ngram-simple --spec-ngram-simple-size-m 48 -p "Prompt"
 EOF
 }
 
@@ -323,12 +341,31 @@ if [[ -z "${MODE}" || "${MODE}" == "-h" || "${MODE}" == "--help" ]]; then
 fi
 shift
 
+if [[ "${MODE}" == "tune-gpu" ]]; then
+    echo "Applying Tesla K80 performance tuning (requires sudo)..."
+    sudo nvidia-smi -pm 1
+    sudo nvidia-smi -ac 2505,875 || true
+    sudo nvidia-smi -pl 149 || true
+    echo "Tesla K80 clocks and power limit tuned successfully."
+    exit 0
+fi
+
+# Optimized base flags for Tesla K80
+K80_BASE_ARGS=(
+    "-ngl" "99"
+    "--split-mode" "layer"
+    "--tensor-split" "0.5,0.5"
+    "-ctk" "q8_0"
+    "-ctv" "q8_0"
+    "-fa"
+)
+
 case "${MODE}" in
     cli|llama-cli)
-        exec "${BIN_DIR}/llama-cli" -ngl 99 --split-mode row --tensor-split 0.5,0.5 "$@"
+        exec "${BIN_DIR}/llama-cli" "${K80_BASE_ARGS[@]}" "$@"
         ;;
     server|llama-server)
-        exec "${BIN_DIR}/llama-server" -ngl 99 --split-mode row --tensor-split 0.5,0.5 "$@"
+        exec "${BIN_DIR}/llama-server" "${K80_BASE_ARGS[@]}" "$@"
         ;;
     *)
         exec "${BIN_DIR}/${MODE}" "$@"
