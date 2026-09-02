@@ -155,4 +155,4 @@ echo -e "  API Key:           ${CYAN}sk-no-key-required${NC}"
 echo -e "------------------------------------------------------
 "
 
-exec "${SERVER_BIN}"     -m "${MODEL_PATH}"     --host "${HOST}"     --port "${PORT}"     -c "${CTX_SIZE}"     -np 1     -b 2048     -ub 512     -cb     -ctk "${KV_QUANT}"     -ctv "${KV_QUANT}"     -ngl "${GPU_LAYERS}"     -fa auto     -t 8     --temp 0.7     --repeat-penalty 1.1     --dry-multiplier 0.8     --dry-base 1.75     --dry-allowed-length 2     --dry-penalty-last-n -1     "${SPEC_ARGS[@]}"
+exec "${SERVER_BIN}"     -m "${MODEL_PATH}"     --host "${HOST}"     --port "${PORT}"     -c "${CTX_SIZE}"     -np 1     -b 2048     -ub 512     -cb     -ctk "${KV_QUANT}"     -ctv "${KV_QUANT}"     -ngl "${GPU_LAYERS}"     -fa auto     -t 8     --temp 0.7     --repeat-penalty 1.1     --dry-multiplier 0.8     --dry-base 1.75     --dry-allowed-length 2     --dry-penalty-last-n 256     "${SPEC_ARGS[@]}"
