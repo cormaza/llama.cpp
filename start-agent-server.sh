@@ -18,7 +18,10 @@ BIN_DIR="${SCRIPT_DIR}/build-amd/bin"
 SERVER_BIN="${BIN_DIR}/llama-server"
 
 DEFAULT_MODEL="${SCRIPT_DIR}/models/gemma-4-12b-it-UD-Q4_K_XL.gguf"
+DEFAULT_MTP="${SCRIPT_DIR}/models/mtp-gemma-4-12b-it-Q8_0.gguf"
 MODEL_PATH="${DEFAULT_MODEL}"
+MTP_PATH=""
+ENABLE_MTP=1
 HOST="0.0.0.0"
 PORT=8080
 SLOTS=8
@@ -30,10 +33,12 @@ Usage: $(basename "$0") [options]
 
 Starts llama-server optimized for AMD Radeon RX 9060 XT & Intel Core Ultra 7 265K.
 Configured for 8 parallel agent slots with 128k context per slot, zero-freeze chunked prefill,
-and DRY / Repeat Penalty anti-loop protection.
+DRY anti-loop protection, and MTP (Multi-Token Prediction) speculative decoding.
 
 Options:
   -m, --model PATH        Path to GGUF model (default: ./models/gemma-4-12b-it-UD-Q4_K_XL.gguf)
+  --mtp PATH              Path to MTP draft model (default: ./models/mtp-gemma-4-12b-it-Q8_0.gguf)
+  --no-mtp                Disable MTP speculative decoding
   -p, --port PORT         HTTP server port (default: 8080)
   --host HOST             Host address to bind (default: 0.0.0.0)
   --slots N               Number of parallel slots (default: 8)
@@ -41,8 +46,8 @@ Options:
 
 Examples:
   ./start-agent-server.sh
+  ./start-agent-server.sh --no-mtp
   ./start-agent-server.sh -p 8081
-  ./start-agent-server.sh -m ./models/Qwen3.8-27B-UD-Q3_K_XL.gguf
 EOF
 }
 
@@ -51,6 +56,14 @@ while [[ $# -gt 0 ]]; do
         -m|--model)
             MODEL_PATH="$2"
             shift 2
+            ;;
+        --mtp)
+            MTP_PATH="$2"
+            shift 2
+            ;;
+        --no-mtp)
+            ENABLE_MTP=0
+            shift
             ;;
         -p|--port)
             PORT="$2"
@@ -91,8 +104,7 @@ fi
 if [[ ! -f "${MODEL_PATH}" ]]; then
     echo -e "${YELLOW}[WARN] Model file not found at: ${MODEL_PATH}${NC}"
     
-    # Check if other models exist in models/
-    FOUND_MODELS=($(find "${SCRIPT_DIR}/models" -maxdepth 1 -name "*.gguf" 2>/dev/null || true))
+    FOUND_MODELS=($(find "${SCRIPT_DIR}/models" -maxdepth 1 -name "*.gguf" ! -name "mtp-*" 2>/dev/null || true))
     if [[ ${#FOUND_MODELS[@]} -gt 0 ]]; then
         echo -e "
 Found existing models in ./models/:\ introduce el número para usarlo:"
@@ -113,6 +125,22 @@ Found existing models in ./models/:\ introduce el número para usarlo:"
     fi
 fi
 
+# 3. Check MTP draft model
+MTP_ARGS=()
+MTP_STATUS="Disabled"
+if [[ "${ENABLE_MTP}" -eq 1 ]]; then
+    if [[ -z "${MTP_PATH}" && -f "${DEFAULT_MTP}" ]]; then
+        MTP_PATH="${DEFAULT_MTP}"
+    fi
+
+    if [[ -n "${MTP_PATH}" && -f "${MTP_PATH}" ]]; then
+        MTP_STATUS="Active (Multi-Token Prediction: $(basename "${MTP_PATH}"))"
+        MTP_ARGS+=("--spec-type" "draft-mtp" "-md" "${MTP_PATH}" "-ngld" "99")
+    else
+        MTP_STATUS="Not found (Download via ./scripts/download-gemma.sh option 2)"
+    fi
+fi
+
 TOTAL_CTX=$(( SLOTS * CTX_PER_SLOT ))
 
 echo -e "${BOLD}Model:${NC}               ${CYAN}${MODEL_PATH}${NC}"
@@ -122,9 +150,10 @@ echo -e "${BOLD}Total Context Pool:${NC}  ${GREEN}${TOTAL_CTX} tokens (1M tokens
 echo -e "${BOLD}Batching:${NC}            ${GREEN}Continuous (-cb) | Chunked Prefill (-ub 512, -b 2048)${NC}"
 echo -e "${BOLD}KV Cache Quant:${NC}      ${GREEN}Q4_0 (-ctk q4_0 -ctv q4_0)${NC}"
 echo -e "${BOLD}Anti-Loop Samplers:${NC}  ${GREEN}DRY (mult 0.8, base 1.75, len 2) + Repeat Penalty 1.1 + Temp 0.7${NC}"
+echo -e "${BOLD}MTP Speculative:${NC}     ${GREEN}${MTP_STATUS}${NC}"
 echo -e "${BOLD}GPU Offload:${NC}         ${GREEN}100% on AMD Radeon RX 9060 XT (-ngl 99 -fa auto)${NC}"
 echo -e "${BOLD}Server Endpoint:${NC}     ${CYAN}http://${HOST}:${PORT}${NC}"
 echo -e "------------------------------------------------------
 "
 
-exec "${SERVER_BIN}"     -m "${MODEL_PATH}"     --host "${HOST}"     --port "${PORT}"     -c "${TOTAL_CTX}"     -np "${SLOTS}"     -b 2048     -ub 512     -cb     -ctk q4_0     -ctv q4_0     -ngl 99     -fa auto     -t 8     --temp 0.7     --repeat-penalty 1.1     --dry-multiplier 0.8     --dry-base 1.75     --dry-allowed-length 2     --dry-penalty-last-n 256
+exec "${SERVER_BIN}"     -m "${MODEL_PATH}"     --host "${HOST}"     --port "${PORT}"     -c "${TOTAL_CTX}"     -np "${SLOTS}"     -b 2048     -ub 512     -cb     -ctk q4_0     -ctv q4_0     -ngl 99     -fa auto     -t 8     --temp 0.7     --repeat-penalty 1.1     --dry-multiplier 0.8     --dry-base 1.75     --dry-allowed-length 2     --dry-penalty-last-n 256     "${MTP_ARGS[@]}"
