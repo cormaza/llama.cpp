@@ -26,6 +26,7 @@ HOST="0.0.0.0"
 PORT=8080
 SLOTS=8
 CUSTOM_CTX=""
+ALIAS="gemma-4-12b,gemma-4,gemma,gpt-4o"
 
 show_help() {
     cat << EOF
@@ -36,6 +37,7 @@ Configured for 8 parallel agent slots, zero-freeze chunked prefill, DRY anti-loo
 and MTP (Multi-Token Prediction) speculative decoding (~42 t/s).
 
 Options:
+  -a, --alias NAMES       Model alias for API clients (default: gemma-4-12b,gemma-4,gemma,gpt-4o)
   -m, --model PATH        Path to GGUF model (default: ./models/gemma-4-12b-it-UD-Q4_K_XL.gguf)
   --mtp PATH              Path to MTP draft model (default: ./models/mtp-gemma-4-12b-it-Q8_0.gguf)
   --no-mtp                Disable MTP (allows 128k context per slot without VRAM overflow)
@@ -53,6 +55,10 @@ EOF
 
 while [[ $# -gt 0 ]]; do
     case "$1" in
+        -a|--alias)
+            ALIAS="$2"
+            shift 2
+            ;;
         -m|--model)
             MODEL_PATH="$2"
             shift 2
@@ -154,6 +160,7 @@ fi
 TOTAL_CTX=$(( SLOTS * CTX_PER_SLOT ))
 
 echo -e "${BOLD}Model:${NC}               ${CYAN}${MODEL_PATH}${NC}"
+echo -e "${BOLD}API Model Alias:${NC}     ${GREEN}${ALIAS}${NC}"
 echo -e "${BOLD}Parallel Slots:${NC}      ${GREEN}${SLOTS} slots${NC}"
 echo -e "${BOLD}Context per Slot:${NC}    ${GREEN}${CTX_PER_SLOT} tokens ($(( CTX_PER_SLOT / 1024 ))k tokens)${NC}"
 echo -e "${BOLD}Total Context Pool:${NC}  ${GREEN}${TOTAL_CTX} tokens ($(( TOTAL_CTX / 1024 ))k tokens)${NC}"

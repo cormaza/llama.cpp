@@ -25,6 +25,7 @@ PORT=8080
 CTX_SIZE=131072 # 128k context (Optimized for speed & agentic workflows)
 KV_QUANT="q4_0"
 GPU_LAYERS=50   # 50 layers in GPU VRAM for maximum speed
+ALIAS="qwen-3.8-27b,qwen-27b,qwen,gpt-4o"
 ENABLE_SPEC=1   # N-Gram Speculative Decoding enabled by default
 
 # Detect Primary LAN IP for remote access
@@ -38,6 +39,7 @@ Starts llama-server for Qwen optimized for High-Speed Agentic Workflows (128k co
 with 50 GPU offloaded layers, N-Gram speculative acceleration, and DRY anti-loop protection.
 
 Options:
+  -a, --alias NAMES       Model alias for API clients (default: qwen-3.8-27b,qwen-27b,qwen,gpt-4o)
   -m, --model PATH        Path to GGUF model
   -c, --context N         Context window size (default: 131072 / 128k tokens)
   -p, --port PORT         HTTP server port (default: 8080)
@@ -55,6 +57,10 @@ EOF
 
 while [[ $# -gt 0 ]]; do
     case "$1" in
+        -a|--alias)
+            ALIAS="$2"
+            shift 2
+            ;;
         -m|--model)
             MODEL_PATH="$2"
             shift 2
@@ -140,6 +146,7 @@ if [[ "${ENABLE_SPEC}" -eq 1 ]]; then
 fi
 
 echo -e "${BOLD}Model:${NC}               ${CYAN}${MODEL_PATH}${NC}"
+echo -e "${BOLD}API Model Alias:${NC}     ${GREEN}${ALIAS}${NC}"
 echo -e "${BOLD}Mode:${NC}                ${GREEN}Single Slot (High-Speed Agent)${NC}"
 echo -e "${BOLD}Context Size:${NC}        ${GREEN}${CTX_SIZE} tokens ($(( CTX_SIZE / 1024 ))k tokens)${NC}"
 echo -e "${BOLD}KV Cache Precision:${NC}  ${GREEN}${KV_QUANT}${NC}"
