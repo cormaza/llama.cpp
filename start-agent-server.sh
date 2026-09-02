@@ -1,6 +1,6 @@
 #!/usr/bin/env bash
 # ==============================================================================
-# start-agent-server.sh - Launcher for 8-Slot 128k Parallel Agent Stack (ROCm/HIP)
+# start-agent-server.sh - Launcher for 8-Slot Parallel Agent Stack (ROCm/HIP)
 # ==============================================================================
 
 set -euo pipefail
@@ -25,29 +25,29 @@ ENABLE_MTP=1
 HOST="0.0.0.0"
 PORT=8080
 SLOTS=8
-CTX_PER_SLOT=131072
+CUSTOM_CTX=""
 
 show_help() {
     cat << EOF
 Usage: $(basename "$0") [options]
 
-Starts llama-server optimized for AMD Radeon RX 9060 XT & Intel Core Ultra 7 265K.
-Configured for 8 parallel agent slots with 128k context per slot, zero-freeze chunked prefill,
-DRY anti-loop protection, and MTP (Multi-Token Prediction) speculative decoding.
+Starts llama-server optimized for AMD Radeon RX 9060 XT (16GB VRAM) & Intel Core Ultra 7 265K.
+Configured for 8 parallel agent slots, zero-freeze chunked prefill, DRY anti-loop protection,
+and MTP (Multi-Token Prediction) speculative decoding (~42 t/s).
 
 Options:
   -m, --model PATH        Path to GGUF model (default: ./models/gemma-4-12b-it-UD-Q4_K_XL.gguf)
   --mtp PATH              Path to MTP draft model (default: ./models/mtp-gemma-4-12b-it-Q8_0.gguf)
-  --no-mtp                Disable MTP speculative decoding
+  --no-mtp                Disable MTP (allows 128k context per slot without VRAM overflow)
+  -c, --ctx-slot N        Context per slot (default: 65536 with MTP / 131072 without MTP)
   -p, --port PORT         HTTP server port (default: 8080)
   --host HOST             Host address to bind (default: 0.0.0.0)
   --slots N               Number of parallel slots (default: 8)
   -h, --help              Show this help message
 
 Examples:
-  ./start-agent-server.sh
-  ./start-agent-server.sh --no-mtp
-  ./start-agent-server.sh -p 8081
+  ./start-agent-server.sh               # 8 slots x 64k with MTP (~42 t/s in 16GB VRAM)
+  ./start-agent-server.sh --no-mtp      # 8 slots x 128k without MTP
 EOF
 }
 
@@ -64,6 +64,10 @@ while [[ $# -gt 0 ]]; do
         --no-mtp)
             ENABLE_MTP=0
             shift
+            ;;
+        -c|--ctx-slot)
+            CUSTOM_CTX="$2"
+            shift 2
             ;;
         -p|--port)
             PORT="$2"
@@ -90,7 +94,7 @@ while [[ $# -gt 0 ]]; do
 done
 
 echo -e "${BOLD}${CYAN}======================================================${NC}"
-echo -e "${BOLD}${CYAN}  8-Slot 128k Parallel Agent Server (ROCm / HIP)      ${NC}"
+echo -e "${BOLD}${CYAN}  8-Slot Parallel Agent Server (ROCm / HIP)           ${NC}"
 echo -e "${BOLD}${CYAN}======================================================${NC}"
 
 # 1. Check binaries
@@ -125,9 +129,10 @@ Found existing models in ./models/:\ introduce el número para usarlo:"
     fi
 fi
 
-# 3. Check MTP draft model
+# 3. Check MTP draft model & Context calculation
 MTP_ARGS=()
 MTP_STATUS="Disabled"
+
 if [[ "${ENABLE_MTP}" -eq 1 ]]; then
     if [[ -z "${MTP_PATH}" && -f "${DEFAULT_MTP}" ]]; then
         MTP_PATH="${DEFAULT_MTP}"
@@ -136,17 +141,22 @@ if [[ "${ENABLE_MTP}" -eq 1 ]]; then
     if [[ -n "${MTP_PATH}" && -f "${MTP_PATH}" ]]; then
         MTP_STATUS="Active (Multi-Token Prediction: $(basename "${MTP_PATH}"))"
         MTP_ARGS+=("--spec-type" "draft-mtp" "-md" "${MTP_PATH}" "-ngld" "99")
+        # Default with MTP: 64k per slot (512k total) to fit base + MTP compute buffer in 16GB VRAM
+        CTX_PER_SLOT=${CUSTOM_CTX:-65536}
     else
         MTP_STATUS="Not found (Download via ./scripts/download-gemma.sh option 2)"
+        CTX_PER_SLOT=${CUSTOM_CTX:-131072}
     fi
+else
+    CTX_PER_SLOT=${CUSTOM_CTX:-131072}
 fi
 
 TOTAL_CTX=$(( SLOTS * CTX_PER_SLOT ))
 
 echo -e "${BOLD}Model:${NC}               ${CYAN}${MODEL_PATH}${NC}"
 echo -e "${BOLD}Parallel Slots:${NC}      ${GREEN}${SLOTS} slots${NC}"
-echo -e "${BOLD}Context per Slot:${NC}    ${GREEN}${CTX_PER_SLOT} tokens (128k)${NC}"
-echo -e "${BOLD}Total Context Pool:${NC}  ${GREEN}${TOTAL_CTX} tokens (1M tokens)${NC}"
+echo -e "${BOLD}Context per Slot:${NC}    ${GREEN}${CTX_PER_SLOT} tokens ($(( CTX_PER_SLOT / 1024 ))k tokens)${NC}"
+echo -e "${BOLD}Total Context Pool:${NC}  ${GREEN}${TOTAL_CTX} tokens ($(( TOTAL_CTX / 1024 ))k tokens)${NC}"
 echo -e "${BOLD}Batching:${NC}            ${GREEN}Continuous (-cb) | Chunked Prefill (-ub 512, -b 2048)${NC}"
 echo -e "${BOLD}KV Cache Quant:${NC}      ${GREEN}Q4_0 (-ctk q4_0 -ctv q4_0)${NC}"
 echo -e "${BOLD}Anti-Loop Samplers:${NC}  ${GREEN}DRY (mult 0.8, base 1.75, len 2) + Repeat Penalty 1.1 + Temp 0.7${NC}"
