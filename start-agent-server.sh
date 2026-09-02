@@ -29,7 +29,8 @@ show_help() {
 Usage: $(basename "$0") [options]
 
 Starts llama-server optimized for AMD Radeon RX 9060 XT & Intel Core Ultra 7 265K.
-Configured for 8 parallel agent slots with 128k context per slot (zero-freeze chunked prefill).
+Configured for 8 parallel agent slots with 128k context per slot, zero-freeze chunked prefill,
+and DRY / Repeat Penalty anti-loop protection.
 
 Options:
   -m, --model PATH        Path to GGUF model (default: ./models/gemma-4-12b-it-UD-Q4_K_XL.gguf)
@@ -120,9 +121,10 @@ echo -e "${BOLD}Context per Slot:${NC}    ${GREEN}${CTX_PER_SLOT} tokens (128k)$
 echo -e "${BOLD}Total Context Pool:${NC}  ${GREEN}${TOTAL_CTX} tokens (1M tokens)${NC}"
 echo -e "${BOLD}Batching:${NC}            ${GREEN}Continuous (-cb) | Chunked Prefill (-ub 512, -b 2048)${NC}"
 echo -e "${BOLD}KV Cache Quant:${NC}      ${GREEN}Q4_0 (-ctk q4_0 -ctv q4_0)${NC}"
+echo -e "${BOLD}Anti-Loop Samplers:${NC}  ${GREEN}DRY (mult 0.8, base 1.75, len 2) + Repeat Penalty 1.1 + Temp 0.7${NC}"
 echo -e "${BOLD}GPU Offload:${NC}         ${GREEN}100% on AMD Radeon RX 9060 XT (-ngl 99 -fa auto)${NC}"
 echo -e "${BOLD}Server Endpoint:${NC}     ${CYAN}http://${HOST}:${PORT}${NC}"
 echo -e "------------------------------------------------------
 "
 
-exec "${SERVER_BIN}"     -m "${MODEL_PATH}"     --host "${HOST}"     --port "${PORT}"     -c "${TOTAL_CTX}"     -np "${SLOTS}"     -b 2048     -ub 512     -cb     -ctk q4_0     -ctv q4_0     -ngl 99     -fa auto     -t 8
+exec "${SERVER_BIN}"     -m "${MODEL_PATH}"     --host "${HOST}"     --port "${PORT}"     -c "${TOTAL_CTX}"     -np "${SLOTS}"     -b 2048     -ub 512     -cb     -ctk q4_0     -ctv q4_0     -ngl 99     -fa auto     -t 8     --temp 0.7     --repeat-penalty 1.1     --dry-multiplier 0.8     --dry-base 1.75     --dry-allowed-length 2     --dry-penalty-last-n -1
