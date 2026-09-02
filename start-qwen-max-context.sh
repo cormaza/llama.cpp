@@ -1,6 +1,6 @@
 #!/usr/bin/env bash
 # ==============================================================================
-# start-qwen-max-context.sh - Single-Thread High-Precision Max-Context Server
+# start-qwen-max-context.sh - Single-Thread High-Speed & 128k Context Server
 # ==============================================================================
 
 set -euo pipefail
@@ -17,14 +17,14 @@ SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 BIN_DIR="${SCRIPT_DIR}/build-amd/bin"
 SERVER_BIN="${BIN_DIR}/llama-server"
 
-DEFAULT_MODEL="${SCRIPT_DIR}/models/Qwen3.8-27B-UD-Q4_K_M.gguf"
-ALT_MODEL="${SCRIPT_DIR}/models/Qwen3.8-27B-UD-Q3_K_XL.gguf"
+DEFAULT_MODEL="${SCRIPT_DIR}/models/Qwen3.8-27B-UD-Q3_K_XL.gguf"
+ALT_MODEL="${SCRIPT_DIR}/models/Qwen3.8-27B-UD-Q4_K_M.gguf"
 MODEL_PATH=""
 HOST="0.0.0.0"
 PORT=8080
-CTX_SIZE=262144 # 256k context
+CTX_SIZE=131072 # 128k context (Optimized for speed & agentic workflows)
 KV_QUANT="q4_0"
-GPU_LAYERS=46   # Optimized default: 46 layers in GPU VRAM
+GPU_LAYERS=50   # 50 layers in GPU VRAM for maximum speed
 ENABLE_SPEC=1   # N-Gram Speculative Decoding enabled by default
 
 # Detect Primary LAN IP for remote access
@@ -34,22 +34,22 @@ show_help() {
     cat << EOF
 Usage: $(basename "$0") [options]
 
-Starts llama-server for Qwen optimized for Single-Thread Deep Reasoning with MAXIMUM context,
-optimized GPU layer offloading (46 layers) and N-Gram speculative acceleration (0 VRAM cost).
+Starts llama-server for Qwen optimized for High-Speed Agentic Workflows (128k context),
+with 50 GPU offloaded layers and N-Gram speculative acceleration (0 VRAM cost).
 
 Options:
   -m, --model PATH        Path to GGUF model
-  -c, --context N         Maximum context window (default: 262144 / 256k tokens)
+  -c, --context N         Context window size (default: 131072 / 128k tokens)
   -p, --port PORT         HTTP server port (default: 8080)
-  --kv-quant TYPE         KV Cache precision: q8_0 (high precision) | q4_0 (default) | f16
-  --ngl N                 Number of layers to offload to GPU (default: 46)
+  --kv-quant TYPE         KV Cache precision: q4_0 (default, fast) | q8_0 | f16
+  --ngl N                 Number of layers to offload to GPU (default: 50)
   --no-spec               Disable N-Gram speculative decoding
   -h, --help              Show this help message
 
 Examples:
   ./start-qwen-max-context.sh
-  ./start-qwen-max-context.sh -c 131072 --kv-quant q8_0
-  ./start-qwen-max-context.sh --ngl 48
+  ./start-qwen-max-context.sh -c 262144
+  ./start-qwen-max-context.sh --ngl 52
 EOF
 }
 
@@ -92,7 +92,7 @@ while [[ $# -gt 0 ]]; do
 done
 
 echo -e "${BOLD}${CYAN}======================================================${NC}"
-echo -e "${BOLD}${CYAN}  Qwen Single-Thread Max-Context & Speed Optimized     ${NC}"
+echo -e "${BOLD}${CYAN}  Qwen High-Speed 128k Agent Server (ROCm / HIP)      ${NC}"
 echo -e "${BOLD}${CYAN}======================================================${NC}"
 
 # 1. Check binaries
@@ -104,10 +104,10 @@ fi
 
 # 2. Select Model
 if [[ -z "${MODEL_PATH}" ]]; then
-    if [[ -f "${ALT_MODEL}" ]]; then
-        MODEL_PATH="${ALT_MODEL}"
-    elif [[ -f "${DEFAULT_MODEL}" ]]; then
+    if [[ -f "${DEFAULT_MODEL}" ]]; then
         MODEL_PATH="${DEFAULT_MODEL}"
+    elif [[ -f "${ALT_MODEL}" ]]; then
+        MODEL_PATH="${ALT_MODEL}"
     else
         FOUND_MODELS=($(find "${SCRIPT_DIR}/models" -maxdepth 1 -name "*.gguf" 2>/dev/null || true))
         if [[ ${#FOUND_MODELS[@]} -gt 0 ]]; then
@@ -132,11 +132,6 @@ Select a model from ./models/:"
     fi
 fi
 
-# Adjust KV cache quant if using 128k and user didn't explicitly override
-if [[ "${CTX_SIZE}" -le 131072 && "${KV_QUANT}" == "q4_0" ]]; then
-    KV_QUANT="q8_0"
-fi
-
 SPEC_STATUS="Disabled"
 SPEC_ARGS=()
 if [[ "${ENABLE_SPEC}" -eq 1 ]]; then
@@ -145,8 +140,8 @@ if [[ "${ENABLE_SPEC}" -eq 1 ]]; then
 fi
 
 echo -e "${BOLD}Model:${NC}               ${CYAN}${MODEL_PATH}${NC}"
-echo -e "${BOLD}Mode:${NC}                ${GREEN}Single Slot (1 Dedicated Agent / Full Power)${NC}"
-echo -e "${BOLD}Context Size:${NC}        ${GREEN}${CTX_SIZE} tokens ($(( CTX_SIZE / 1024 ))k)${NC}"
+echo -e "${BOLD}Mode:${NC}                ${GREEN}Single Slot (High-Speed Agent)${NC}"
+echo -e "${BOLD}Context Size:${NC}        ${GREEN}${CTX_SIZE} tokens ($(( CTX_SIZE / 1024 ))k tokens)${NC}"
 echo -e "${BOLD}KV Cache Precision:${NC}  ${GREEN}${KV_QUANT}${NC}"
 echo -e "${BOLD}GPU Offload:${NC}         ${GREEN}${GPU_LAYERS} layers to AMD Radeon RX 9060 XT (-ngl ${GPU_LAYERS} -fa auto)${NC}"
 echo -e "${BOLD}Speculative Dec:${NC}     ${GREEN}${SPEC_STATUS}${NC}"
