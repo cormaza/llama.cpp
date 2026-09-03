@@ -19,14 +19,17 @@ SERVER_BIN="${BIN_DIR}/llama-server"
 
 DEFAULT_MODEL="${SCRIPT_DIR}/models/Qwen3.8-27B-UD-Q3_K_XL.gguf"
 ALT_MODEL="${SCRIPT_DIR}/models/Qwen3.8-27B-UD-Q4_K_M.gguf"
+DEFAULT_MTP="${SCRIPT_DIR}/models/mtp-Qwen3.8-27B-Q4_0.gguf"
 MODEL_PATH=""
+MTP_PATH=""
 HOST="0.0.0.0"
 PORT=8080
 CTX_SIZE=131072 # 128k context (Optimized for speed & agentic workflows)
 KV_QUANT="q4_0"
-GPU_LAYERS=50   # 50 layers in GPU VRAM for maximum speed
+CUSTOM_NGL=""
 ALIAS="qwen-3.8-27b,qwen-27b,qwen,gpt-4o"
-ENABLE_SPEC=1   # N-Gram Speculative Decoding enabled by default
+ENABLE_MTP=1
+ENABLE_SPEC=1
 
 # Detect Primary LAN IP for remote access
 LOCAL_IP="$(ip -4 route get 1.1.1.1 2>/dev/null | awk '{print $7}' | head -n1 || echo "127.0.0.1")"
@@ -36,22 +39,24 @@ show_help() {
 Usage: $(basename "$0") [options]
 
 Starts llama-server for Qwen optimized for High-Speed Agentic Workflows (128k context),
-with 50 GPU offloaded layers, N-Gram speculative acceleration, and DRY anti-loop protection.
+with MTP (Multi-Token Prediction) speculative decoding (~6.5+ t/s in hybrid mode) and DRY anti-loop protection.
 
 Options:
   -a, --alias NAMES       Model alias for API clients (default: qwen-3.8-27b,qwen-27b,qwen,gpt-4o)
-  -m, --model PATH        Path to GGUF model
-  -c, --context N         Context window size (default: 131072 / 128k tokens)
+  -m, --model PATH        Path to GGUF model (default: ./models/Qwen3.8-27B-UD-Q3_K_XL.gguf)
+  --mtp PATH              Path to MTP draft model (default: ./models/mtp-Qwen3.8-27B-Q4_0.gguf)
+  --no-mtp                Disable MTP (falls back to N-Gram speculative decoding)
+  -c, --context N         Context window size (default: 131072 / 128k tokens, supports up to 262144)
   -p, --port PORT         HTTP server port (default: 8080)
   --kv-quant TYPE         KV Cache precision: q4_0 (default, fast) | q8_0 | f16
-  --ngl N                 Number of layers to offload to GPU (default: 50)
-  --no-spec               Disable N-Gram speculative decoding
+  --ngl N                 Number of layers to offload to GPU (default: 42 with MTP, 50 without MTP)
+  --no-spec               Disable all speculative decoding
   -h, --help              Show this help message
 
 Examples:
   ./start-qwen-max-context.sh
   ./start-qwen-max-context.sh -c 262144
-  ./start-qwen-max-context.sh --ngl 52
+  ./start-qwen-max-context.sh --no-mtp
 EOF
 }
 
@@ -64,6 +69,14 @@ while [[ $# -gt 0 ]]; do
         -m|--model)
             MODEL_PATH="$2"
             shift 2
+            ;;
+        --mtp)
+            MTP_PATH="$2"
+            shift 2
+            ;;
+        --no-mtp)
+            ENABLE_MTP=0
+            shift
             ;;
         -c|--context)
             CTX_SIZE="$2"
@@ -78,7 +91,7 @@ while [[ $# -gt 0 ]]; do
             shift 2
             ;;
         --ngl)
-            GPU_LAYERS="$2"
+            CUSTOM_NGL="$2"
             shift 2
             ;;
         --no-spec)
@@ -98,7 +111,7 @@ while [[ $# -gt 0 ]]; do
 done
 
 echo -e "${BOLD}${CYAN}======================================================${NC}"
-echo -e "${BOLD}${CYAN}  Qwen High-Speed 128k Agent Server (ROCm / HIP)      ${NC}"
+echo -e "${BOLD}${CYAN}  Qwen High-Speed 128k Agent Server (MTP / ROCm)      ${NC}"
 echo -e "${BOLD}${CYAN}======================================================${NC}"
 
 # 1. Check binaries
@@ -115,7 +128,7 @@ if [[ -z "${MODEL_PATH}" ]]; then
     elif [[ -f "${ALT_MODEL}" ]]; then
         MODEL_PATH="${ALT_MODEL}"
     else
-        FOUND_MODELS=($(find "${SCRIPT_DIR}/models" -maxdepth 1 -name "*.gguf" 2>/dev/null || true))
+        FOUND_MODELS=($(find "${SCRIPT_DIR}/models" -maxdepth 1 -iname "*qwen*27b*.gguf" ! -iname "mtp-*" 2>/dev/null || true))
         if [[ ${#FOUND_MODELS[@]} -gt 0 ]]; then
             echo -e "
 Select a model from ./models/:"
@@ -138,11 +151,35 @@ Select a model from ./models/:"
     fi
 fi
 
+# 3. Setup MTP or Speculative Decoding
 SPEC_STATUS="Disabled"
 SPEC_ARGS=()
+GPU_LAYERS=50
+
 if [[ "${ENABLE_SPEC}" -eq 1 ]]; then
-    SPEC_STATUS="Active (N-Gram Prompt Lookup, m=48)"
-    SPEC_ARGS+=("--spec-type" "ngram-simple" "--spec-ngram-simple-size-m" "48")
+    if [[ "${ENABLE_MTP}" -eq 1 ]]; then
+        if [[ -z "${MTP_PATH}" && -f "${DEFAULT_MTP}" ]]; then
+            MTP_PATH="${DEFAULT_MTP}"
+        fi
+
+        if [[ -n "${MTP_PATH}" && -f "${MTP_PATH}" ]]; then
+            SPEC_STATUS="Active (Multi-Token Prediction: $(basename "${MTP_PATH}"))"
+            SPEC_ARGS+=("--spec-type" "draft-mtp" "-md" "${MTP_PATH}" "-ngld" "99")
+            GPU_LAYERS=42 # Balanced offload: keeps model + MTP + KV cache safely in 16GB VRAM
+        else
+            SPEC_STATUS="Active (N-Gram Prompt Lookup, m=48)"
+            SPEC_ARGS+=("--spec-type" "ngram-simple" "--spec-ngram-simple-size-m" "48")
+            GPU_LAYERS=50
+        fi
+    else
+        SPEC_STATUS="Active (N-Gram Prompt Lookup, m=48)"
+        SPEC_ARGS+=("--spec-type" "ngram-simple" "--spec-ngram-simple-size-m" "48")
+        GPU_LAYERS=50
+    fi
+fi
+
+if [[ -n "${CUSTOM_NGL}" ]]; then
+    GPU_LAYERS="${CUSTOM_NGL}"
 fi
 
 echo -e "${BOLD}Model:${NC}               ${CYAN}${MODEL_PATH}${NC}"
@@ -162,4 +199,4 @@ echo -e "  API Key:           ${CYAN}sk-no-key-required${NC}"
 echo -e "------------------------------------------------------
 "
 
-exec "${SERVER_BIN}"     -m "${MODEL_PATH}"     --host "${HOST}"     --port "${PORT}"     -c "${CTX_SIZE}"     -np 1     -b 2048     -ub 512     -cb     -ctk "${KV_QUANT}"     -ctv "${KV_QUANT}"     -ngl "${GPU_LAYERS}"     -fa auto     -t 8     --temp 0.7     --repeat-penalty 1.1     --dry-multiplier 0.8     --dry-base 1.75     --dry-allowed-length 2     --dry-penalty-last-n 256     "${SPEC_ARGS[@]}"
+exec "${SERVER_BIN}"     -m "${MODEL_PATH}"     --alias "${ALIAS}"     --host "${HOST}"     --port "${PORT}"     -c "${CTX_SIZE}"     -np 1     -b 2048     -ub 512     -cb     -ctk "${KV_QUANT}"     -ctv "${KV_QUANT}"     -ngl "${GPU_LAYERS}"     -fa auto     -t 8     --temp 0.7     --repeat-penalty 1.1     --dry-multiplier 0.8     --dry-base 1.75     --dry-allowed-length 2     --dry-penalty-last-n 256     "${SPEC_ARGS[@]}"
