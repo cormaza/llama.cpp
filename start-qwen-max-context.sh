@@ -30,6 +30,7 @@ CUSTOM_NGL=""
 ALIAS="qwen-3.8-27b"
 ENABLE_MTP=1
 ENABLE_SPEC=1
+TEMPERATURE=0.2
 
 # Detect Primary LAN IP for remote access
 LOCAL_IP="$(ip -4 route get 1.1.1.1 2>/dev/null | awk '{print $7}' | head -n1 || echo "127.0.0.1")"
@@ -47,6 +48,7 @@ Options:
   --mtp PATH              Path to MTP draft model (default: ./models/mtp-Qwen3.8-27B-Q4_0.gguf)
   --no-mtp                Disable MTP (falls back to N-Gram speculative decoding)
   -c, --context N         Context window size (default: 131072 / 128k tokens, supports up to 262144)
+  --temp N                Sampling temperature (default: 0.2, low/precise for coding)
   -p, --port PORT         HTTP server port (default: 8080)
   --kv-quant TYPE         KV Cache precision: q4_0 (default, fast) | q8_0 | f16
   --ngl N                 Number of layers to offload to GPU (default: 42 with MTP, 50 without MTP)
@@ -55,6 +57,7 @@ Options:
 
 Examples:
   ./start-qwen-max-context.sh
+  ./start-qwen-max-context.sh --temp 0.6
   ./start-qwen-max-context.sh -c 262144
   ./start-qwen-max-context.sh --no-mtp
 EOF
@@ -77,6 +80,10 @@ while [[ $# -gt 0 ]]; do
         --no-mtp)
             ENABLE_MTP=0
             shift
+            ;;
+        --temp|--temperature)
+            TEMPERATURE="$2"
+            shift 2
             ;;
         -c|--context)
             CTX_SIZE="$2"
@@ -189,7 +196,8 @@ echo -e "${BOLD}Context Size:${NC}        ${GREEN}${CTX_SIZE} tokens ($(( CTX_SI
 echo -e "${BOLD}KV Cache Precision:${NC}  ${GREEN}${KV_QUANT}${NC}"
 echo -e "${BOLD}GPU Offload:${NC}         ${GREEN}${GPU_LAYERS} layers to AMD Radeon RX 9060 XT (-ngl ${GPU_LAYERS} -fa auto)${NC}"
 echo -e "${BOLD}Speculative Dec:${NC}     ${GREEN}${SPEC_STATUS}${NC}"
-echo -e "${BOLD}Anti-Loop Samplers:${NC}  ${GREEN}DRY (mult 0.8, base 1.75, len 2) + Repeat Penalty 1.1 + Temp 0.7${NC}"
+echo -e "${BOLD}Temperature:${NC}         ${GREEN}${TEMPERATURE} (low/precise for coding)${NC}"
+echo -e "${BOLD}Anti-Loop Samplers:${NC}  ${GREEN}DRY (mult 0.8, base 1.75, len 2) + Repeat Penalty 1.1${NC}"
 echo -e "${BOLD}CPU Acceleration:${NC}    ${GREEN}Intel Core Ultra 7 265K (AVX_VNNI, -t 8)${NC}"
 echo -e "
 ${BOLD}${YELLOW}=== Remote Connection Info (From another machine) ===${NC}"
@@ -199,4 +207,25 @@ echo -e "  API Key:           ${CYAN}sk-no-key-required${NC}"
 echo -e "------------------------------------------------------
 "
 
-exec "${SERVER_BIN}"     -m "${MODEL_PATH}"     --alias "${ALIAS}"     --host "${HOST}"     --port "${PORT}"     -c "${CTX_SIZE}"     -np 1     -b 2048     -ub 512     -cb     -ctk "${KV_QUANT}"     -ctv "${KV_QUANT}"     -ngl "${GPU_LAYERS}"     -fa auto     -t 8     --temp 0.7     --repeat-penalty 1.1     --dry-multiplier 0.8     --dry-base 1.75     --dry-allowed-length 2     --dry-penalty-last-n 256     "${SPEC_ARGS[@]}"
+exec "${SERVER_BIN}" \
+    -m "${MODEL_PATH}" \
+    --alias "${ALIAS}" \
+    --host "${HOST}" \
+    --port "${PORT}" \
+    -c "${CTX_SIZE}" \
+    -np 1 \
+    -b 2048 \
+    -ub 512 \
+    -cb \
+    -ctk "${KV_QUANT}" \
+    -ctv "${KV_QUANT}" \
+    -ngl "${GPU_LAYERS}" \
+    -fa auto \
+    -t 8 \
+    --temp "${TEMPERATURE}" \
+    --repeat-penalty 1.1 \
+    --dry-multiplier 0.8 \
+    --dry-base 1.75 \
+    --dry-allowed-length 2 \
+    --dry-penalty-last-n 256 \
+    "${SPEC_ARGS[@]}"
