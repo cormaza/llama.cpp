@@ -1,6 +1,6 @@
 #!/usr/bin/env bash
 # ==============================================================================
-# download-model.sh - Helper to download Unsloth GGUF models with resume support
+# download-model.sh - Helper to download Qwen3.8-27B GGUF models and MTP Draft
 # ==============================================================================
 
 set -euo pipefail
@@ -14,37 +14,60 @@ BOLD='[1m'
 NC='[0m'
 
 MODELS_DIR="./models"
-DEFAULT_REPO="unsloth/Qwen3.8-27B-GGUF"
-DEFAULT_FILE="Qwen3.8-27B-UD-Q3_K_XL.gguf"
-
+REPO="unsloth/Qwen3.8-27B-GGUF"
 mkdir -p "${MODELS_DIR}"
 
 echo -e "${BOLD}${CYAN}======================================================${NC}"
-echo -e "${BOLD}${CYAN}  Qwen3.8-27B-GGUF Downloader (256k Context Ready)    ${NC}"
+echo -e "${BOLD}${CYAN}  Qwen3.8-27B Downloader & MTP Speculative Setup      ${NC}"
 echo -e "${BOLD}${CYAN}======================================================${NC}"
 
 echo -e "
-Select quantization for Qwen3.8-27B:"
-echo -e "  [1] UD-Q3_K_XL (12.24 GB) - RECOMMENDED for 256k Context (Fits weights + 256k KV cache in 48GB memory)"
-echo -e "  [2] UD-IQ4_XS  (13.27 GB) - Excellent balance of quality and size"
-echo -e "  [3] UD-Q4_K_M  (15.33 GB) - Higher precision (Best for shorter/medium context ~64k-128k)"
-echo -e "  [4] Custom file name"
+Select Qwen3.8-27B download option:"
+echo -e "  [1] Base UD-Q3_K_XL (12.24 GB) + MTP Q4_0 Draft (1.27 GB) - RECOMMENDED (Max Speedup 6.5+ t/s)"
+echo -e "  [2] Only MTP Draft Module: mtp-Qwen3.8-27B-Q4_0.gguf (1.27 GB) - Download draft if you already have the base"
+echo -e "  [3] Base UD-Q3_K_XL Only (12.24 GB) - For 128k/256k context"
+echo -e "  [4] Base UD-IQ4_XS  Only (13.27 GB) - Higher precision"
+echo -e "  [5] Base UD-Q4_K_M  Only (15.33 GB) - Maximum precision"
+echo -e "  [6] Custom GGUF filename"
 
-read -rp "Enter choice [1-4] (default 1): " CHOICE
+read -rp "Enter choice [1-6] (default 1): " CHOICE
 CHOICE="${CHOICE:-1}"
+
+download_file() {
+    local file="$1"
+    local target="${MODELS_DIR}/$(basename "${file}")"
+    local url="https://huggingface.co/${REPO}/resolve/main/${file}"
+
+    echo -e "
+${BOLD}Downloading:${NC} $(basename "${file}")"
+    echo -e "${BOLD}Destination:${NC} ${target}"
+    echo -e "${BOLD}URL:${NC} ${url}
+"
+
+    curl -L -C - "${url}" -o "${target}" --progress-bar
+    echo -e "${GREEN}[OK] Saved to: ${target}${NC}"
+}
 
 case "${CHOICE}" in
     1)
-        FILE="Qwen3.8-27B-UD-Q3_K_XL.gguf"
+        download_file "Qwen3.8-27B-UD-Q3_K_XL.gguf"
+        download_file "MTP/mtp-Qwen3.8-27B-Q4_0.gguf"
         ;;
     2)
-        FILE="Qwen3.8-27B-UD-IQ4_XS.gguf"
+        download_file "MTP/mtp-Qwen3.8-27B-Q4_0.gguf"
         ;;
     3)
-        FILE="Qwen3.8-27B-UD-Q4_K_M.gguf"
+        download_file "Qwen3.8-27B-UD-Q3_K_XL.gguf"
         ;;
     4)
-        read -rp "Enter exact GGUF filename: " FILE
+        download_file "Qwen3.8-27B-UD-IQ4_XS.gguf"
+        ;;
+    5)
+        download_file "Qwen3.8-27B-UD-Q4_K_M.gguf"
+        ;;
+    6)
+        read -rp "Enter exact HF path/filename: " FILE
+        download_file "${FILE}"
         ;;
     *)
         echo -e "${RED}Invalid choice.${NC}"
@@ -52,20 +75,8 @@ case "${CHOICE}" in
         ;;
 esac
 
-TARGET_PATH="${MODELS_DIR}/${FILE}"
-DOWNLOAD_URL="https://huggingface.co/${DEFAULT_REPO}/resolve/main/${FILE}"
-
-echo -e "
-${BOLD}Downloading:${NC} ${FILE}"
-echo -e "${BOLD}Destination:${NC} ${TARGET_PATH}"
-echo -e "${BOLD}URL:${NC} ${DOWNLOAD_URL}
-"
-
-curl -L -C - "${DOWNLOAD_URL}" -o "${TARGET_PATH}" --progress-bar
-
 echo -e "
 ${GREEN}${BOLD}Download completed successfully!${NC}"
-echo -e "Model saved at: ${CYAN}${TARGET_PATH}${NC}"
 echo -e "
-To run with 256k context using AMD GPU + CPU Hybrid mode:"
-echo -e "  ${YELLOW}./run-amd.sh cli -m ${TARGET_PATH} -c 262144 -ctk q4_0 -ctv q4_0 -ngl 38 -fa auto -p "Tu prompt largo aquí"${NC}"
+To launch Qwen with MTP Speculative Acceleration:"
+echo -e "  ${YELLOW}./start-qwen-max-context.sh${NC}"
