@@ -27,7 +27,7 @@ PORT=8080
 CTX_SIZE=131072 # 128k context (Optimized for speed & agentic workflows)
 KV_QUANT="q4_0"
 CUSTOM_NGL=""
-ALIAS="qwen-3.8-27b,qwen-27b,qwen,gpt-4o"
+ALIAS="qwen-3.8-27b"
 ENABLE_MTP=1
 ENABLE_SPEC=1
 
