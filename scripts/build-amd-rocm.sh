@@ -299,7 +299,7 @@ AMD_BASE_ARGS=(
     "-ngl" "99"
     "-fa" "auto"
     "-t" "8"
-    "--temp" "0.7"
+    "--temp" "0.2"
     "--repeat-penalty" "1.1"
     "--dry-multiplier" "0.8"
     "--dry-base" "1.75"

@@ -29,6 +29,7 @@ CUSTOM_CTX=""
 ALIAS="gemma-4-12b"
 THREADS=4
 ENABLE_CTX_SHIFT=1
+TEMPERATURE=0.2
 
 show_help() {
     cat << EOF
@@ -44,6 +45,7 @@ Options:
   --mtp PATH              Path to MTP draft model (default: ./models/mtp-gemma-4-12b-it-Q8_0.gguf)
   --no-mtp                Disable MTP (allows 128k context per slot without VRAM overflow)
   -c, --ctx-slot N        Context per slot (default: 131072 for <=4 slots, 65536 for 8 slots)
+  --temp N                Sampling temperature (default: 0.2, low/precise for coding)
   -t, --threads N         Number of CPU threads (default: 4, reduced to avoid CPU contention)
   --context-shift         Enable context shifting for infinite text generation (default: enabled)
   --no-context-shift      Disable context shifting
@@ -54,6 +56,7 @@ Options:
 
 Examples:
   ./start-agent-server.sh                     # 8 slots x 64k with MTP (~42 t/s in 16GB VRAM)
+  ./start-agent-server.sh --temp 0.6          # Fine-tune temperature
   ./start-agent-server.sh --slots 1           # 1 slot x 128k maximized context for OMP agent
   ./start-agent-server.sh --slots 1 -c 262144 # 1 slot x 256k ultra-deep context
   ./start-agent-server.sh --no-mtp            # 8 slots x 128k without MTP
@@ -77,6 +80,10 @@ while [[ $# -gt 0 ]]; do
         --no-mtp)
             ENABLE_MTP=0
             shift
+            ;;
+        --temp|--temperature)
+            TEMPERATURE="$2"
+            shift 2
             ;;
         -c|--ctx-slot)
             CUSTOM_CTX="$2"
@@ -202,7 +209,8 @@ echo -e "${BOLD}Context Shift:${NC}       ${GREEN}${CTX_SHIFT_STATUS}${NC}"
 echo -e "${BOLD}CPU Threads:${NC}         ${GREEN}${THREADS} threads (-t ${THREADS})${NC}"
 echo -e "${BOLD}Batching:${NC}            ${GREEN}Continuous (-cb) | Chunked Prefill (-ub 512, -b 2048)${NC}"
 echo -e "${BOLD}KV Cache Quant:${NC}      ${GREEN}Q4_0 (-ctk q4_0 -ctv q4_0)${NC}"
-echo -e "${BOLD}Anti-Loop Samplers:${NC}  ${GREEN}DRY (mult 0.8, base 1.75, len 2) + Repeat Penalty 1.1 + Temp 0.7${NC}"
+echo -e "${BOLD}Temperature:${NC}         ${GREEN}${TEMPERATURE} (low/precise for coding)${NC}"
+echo -e "${BOLD}Anti-Loop Samplers:${NC}  ${GREEN}DRY (mult 0.8, base 1.75, len 2) + Repeat Penalty 1.1${NC}"
 echo -e "${BOLD}MTP Speculative:${NC}     ${GREEN}${MTP_STATUS}${NC}"
 echo -e "${BOLD}GPU Offload:${NC}         ${GREEN}100% on AMD Radeon RX 9060 XT (-ngl 99 -fa auto)${NC}"
 echo -e "${BOLD}Server Endpoint:${NC}     ${CYAN}http://${HOST}:${PORT}${NC}"
@@ -223,7 +231,7 @@ exec "${SERVER_BIN}" \
     -ngl 99 \
     -fa auto \
     -t "${THREADS}" \
-    --temp 0.7 \
+    --temp "${TEMPERATURE}" \
     --repeat-penalty 1.1 \
     --dry-multiplier 0.8 \
     --dry-base 1.75 \

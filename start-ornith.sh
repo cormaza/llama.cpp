@@ -27,6 +27,7 @@ KV_QUANT="q4_0"
 ENABLE_MTP=1
 DRAFT_N_MAX=3     # Optimal draft depth for Ornith MTP
 ALIAS="ornith-1.5-9b,ornith,gpt-4o,qwen"
+TEMPERATURE=0.2
 
 # Detect Primary LAN IP for remote access
 LOCAL_IP="$(ip -4 route get 1.1.1.1 2>/dev/null | awk '{print $7}' | head -n1 || echo "127.0.0.1")"
@@ -42,6 +43,7 @@ Options:
   -m, --model PATH        Path to Ornith GGUF model
   -a, --alias NAMES       Model alias for API clients (default: ornith-1.5-9b,ornith,gpt-4o,qwen)
   -c, --context N         Maximum context window (default: 131072 / 128k, supports up to 262144)
+  --temp N                Sampling temperature (default: 0.2, low/precise for coding)
   -p, --port PORT         HTTP server port (default: 8080)
   --kv-quant TYPE         KV Cache precision: q4_0 (default, fast) | q8_0 | f16
   --draft-n N             MTP draft depth (default: 3, optimal for throughput)
@@ -50,6 +52,7 @@ Options:
 
 Examples:
   ./start-ornith.sh
+  ./start-ornith.sh --temp 0.6
   ./start-ornith.sh -c 262144
   ./start-ornith.sh -m ./models/Ornith-1.5-9B-MTP-Q6_K.gguf
 EOF
@@ -79,6 +82,10 @@ while [[ $# -gt 0 ]]; do
             ;;
         --draft-n)
             DRAFT_N_MAX="$2"
+            shift 2
+            ;;
+        --temp|--temperature)
+            TEMPERATURE="$2"
             shift 2
             ;;
         --no-mtp)
@@ -152,7 +159,8 @@ echo -e "${BOLD}Context Size:${NC}        ${GREEN}${CTX_SIZE} tokens ($(( CTX_SI
 echo -e "${BOLD}KV Cache Precision:${NC}  ${GREEN}${KV_QUANT}${NC}"
 echo -e "${BOLD}GPU Offload:${NC}         ${GREEN}100% on AMD Radeon RX 9060 XT (All 34 layers offloaded)${NC}"
 echo -e "${BOLD}Speculative Dec:${NC}     ${GREEN}${MTP_STATUS}${NC}"
-echo -e "${BOLD}Anti-Loop Samplers:${NC}  ${GREEN}DRY (mult 0.8, base 1.75) + Repeat Penalty 1.1 + Temp 0.8${NC}"
+echo -e "${BOLD}Temperature:${NC}         ${GREEN}${TEMPERATURE} (low/precise for coding)${NC}"
+echo -e "${BOLD}Anti-Loop Samplers:${NC}  ${GREEN}DRY (mult 0.8, base 1.75) + Repeat Penalty 1.1${NC}"
 echo -e "
 ${BOLD}${YELLOW}=== Remote Connection Info (From another machine) ===${NC}"
 echo -e "  Web UI:            ${CYAN}http://${LOCAL_IP}:${PORT}${NC}"
@@ -161,4 +169,27 @@ echo -e "  API Key:           ${CYAN}sk-no-key-required${NC}"
 echo -e "------------------------------------------------------
 "
 
-exec "${SERVER_BIN}"     -m "${MODEL_PATH}"     --alias "${ALIAS}"     --host "${HOST}"     --port "${PORT}"     -c "${CTX_SIZE}"     -np 1     -b 2048     -ub 512     -cb     -ctk "${KV_QUANT}"     -ctv "${KV_QUANT}"     -ngl 99     -fit off     -fa auto     -t 8     --temp 0.8     --presence-penalty 1.0     --repeat-penalty 1.1     --dry-multiplier 0.8     --dry-base 1.75     --dry-allowed-length 2     --dry-penalty-last-n 256     "${MTP_ARGS[@]}"
+exec "${SERVER_BIN}" \
+    -m "${MODEL_PATH}" \
+    --alias "${ALIAS}" \
+    --host "${HOST}" \
+    --port "${PORT}" \
+    -c "${CTX_SIZE}" \
+    -np 1 \
+    -b 2048 \
+    -ub 512 \
+    -cb \
+    -ctk "${KV_QUANT}" \
+    -ctv "${KV_QUANT}" \
+    -ngl 99 \
+    -fit off \
+    -fa auto \
+    -t 8 \
+    --temp "${TEMPERATURE}" \
+    --presence-penalty 1.0 \
+    --repeat-penalty 1.1 \
+    --dry-multiplier 0.8 \
+    --dry-base 1.75 \
+    --dry-allowed-length 2 \
+    --dry-penalty-last-n 256 \
+    "${MTP_ARGS[@]}"
