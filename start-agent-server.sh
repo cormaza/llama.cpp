@@ -26,7 +26,7 @@ HOST="0.0.0.0"
 PORT=8080
 SLOTS=8
 CUSTOM_CTX=""
-ALIAS="gemma-4-12b,gemma-4,gemma,gpt-4o"
+ALIAS="gemma-4-12b"
 THREADS=4
 ENABLE_CTX_SHIFT=1
 
