@@ -28,7 +28,7 @@ CTX_SIZE=131072
 KV_QUANT="q4_0"
 THREADS=4
 ENABLE_CTX_SHIFT=1
-ALIAS="gemma-4-12b,gemma-4,gemma,gpt-4o"
+ALIAS="gemma-4-12b"
 
 LOCAL_IP="$(ip -4 route get 1.1.1.1 2>/dev/null | awk '{print $7}' | head -n1 || echo "127.0.0.1")"
 
