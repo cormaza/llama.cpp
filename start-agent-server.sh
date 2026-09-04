@@ -212,9 +212,11 @@ echo -e "${BOLD}KV Cache Quant:${NC}      ${GREEN}Q4_0 (-ctk q4_0 -ctv q4_0)${NC
 echo -e "${BOLD}Temperature:${NC}         ${GREEN}${TEMPERATURE} (low/precise for coding)${NC}"
 echo -e "${BOLD}Anti-Loop Samplers:${NC}  ${GREEN}DRY (mult 0.8, base 1.75, len 2) + Repeat Penalty 1.1${NC}"
 echo -e "${BOLD}MTP Speculative:${NC}     ${GREEN}${MTP_STATUS}${NC}"
-echo -e "${BOLD}GPU Offload:${NC}         ${GREEN}100% on AMD Radeon RX 9060 XT (-ngl 99 -fa auto)${NC}"
 echo -e "${BOLD}Server Endpoint:${NC}     ${CYAN}http://${HOST}:${PORT}${NC}"
 echo -e "------------------------------------------------------\n"
+
+# Enable prompt and token stream exposure in /slots for monitor drill-down
+export LLAMA_SERVER_SLOTS_DEBUG=1
 
 exec "${SERVER_BIN}" \
     -m "${MODEL_PATH}" \
