@@ -160,7 +160,7 @@ echo -e "${BOLD}KV Cache Precision:${NC}  ${GREEN}${KV_QUANT}${NC}"
 echo -e "${BOLD}GPU Offload:${NC}         ${GREEN}100% on AMD Radeon RX 9060 XT (All 34 layers offloaded)${NC}"
 echo -e "${BOLD}Speculative Dec:${NC}     ${GREEN}${MTP_STATUS}${NC}"
 echo -e "${BOLD}Temperature:${NC}         ${GREEN}${TEMPERATURE} (low/precise for coding)${NC}"
-echo -e "${BOLD}Anti-Loop Samplers:${NC}  ${GREEN}DRY (mult 0.8, base 1.75) + Repeat Penalty 1.1${NC}"
+echo -e "${BOLD}Anti-Loop Samplers:${NC}  ${GREEN}DRY (mult 0.8, base 1.75, len 4) + Repeat Penalty 1.0 (code/path safe)${NC}"
 echo -e "
 ${BOLD}${YELLOW}=== Remote Connection Info (From another machine) ===${NC}"
 echo -e "  Web UI:            ${CYAN}http://${LOCAL_IP}:${PORT}${NC}"
@@ -189,10 +189,9 @@ exec "${SERVER_BIN}" \
     -fa auto \
     -t 8 \
     --temp "${TEMPERATURE}" \
-    --presence-penalty 1.0 \
-    --repeat-penalty 1.1 \
+    --repeat-penalty 1.0 \
     --dry-multiplier 0.8 \
     --dry-base 1.75 \
-    --dry-allowed-length 2 \
+    --dry-allowed-length 4 \
     --dry-penalty-last-n 256 \
     "${MTP_ARGS[@]}"
