@@ -210,7 +210,7 @@ echo -e "${BOLD}CPU Threads:${NC}         ${GREEN}${THREADS} threads (-t ${THREA
 echo -e "${BOLD}Batching:${NC}            ${GREEN}Continuous (-cb) | Chunked Prefill (-ub 512, -b 2048)${NC}"
 echo -e "${BOLD}KV Cache Quant:${NC}      ${GREEN}Q4_0 (-ctk q4_0 -ctv q4_0)${NC}"
 echo -e "${BOLD}Temperature:${NC}         ${GREEN}${TEMPERATURE} (low/precise for coding)${NC}"
-echo -e "${BOLD}Anti-Loop Samplers:${NC}  ${GREEN}DRY (mult 0.8, base 1.75, len 2) + Repeat Penalty 1.1${NC}"
+echo -e "${BOLD}Anti-Loop Samplers:${NC}  ${GREEN}DRY (mult 0.8, base 1.75, len 4) + Repeat Penalty 1.0 (code/path safe)${NC}"
 echo -e "${BOLD}MTP Speculative:${NC}     ${GREEN}${MTP_STATUS}${NC}"
 echo -e "${BOLD}Server Endpoint:${NC}     ${CYAN}http://${HOST}:${PORT}${NC}"
 echo -e "------------------------------------------------------\n"
@@ -234,10 +234,10 @@ exec "${SERVER_BIN}" \
     -fa auto \
     -t "${THREADS}" \
     --temp "${TEMPERATURE}" \
-    --repeat-penalty 1.1 \
+    --repeat-penalty 1.0 \
     --dry-multiplier 0.8 \
     --dry-base 1.75 \
-    --dry-allowed-length 2 \
+    --dry-allowed-length 4 \
     --dry-penalty-last-n 256 \
     "${CTX_SHIFT_ARGS[@]}" \
     "${MTP_ARGS[@]}"
