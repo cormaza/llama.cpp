@@ -300,11 +300,6 @@ AMD_BASE_ARGS=(
     "-fa" "auto"
     "-t" "8"
     "--temp" "0.2"
-    "--repeat-penalty" "1.0"
-    "--dry-multiplier" "0.8"
-    "--dry-base" "1.75"
-    "--dry-allowed-length" "4"
-    "--dry-penalty-last-n" "256"
 )
 
 case "${MODE}" in
