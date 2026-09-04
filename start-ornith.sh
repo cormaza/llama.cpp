@@ -26,7 +26,7 @@ CTX_SIZE=131072   # 128k context (100% in VRAM at max speed)
 KV_QUANT="q4_0"
 ENABLE_MTP=1
 DRAFT_N_MAX=3     # Optimal draft depth for Ornith MTP
-ALIAS="ornith-1.5-9b,ornith,gpt-4o,qwen"
+ALIAS="ornith-1.5-9b"
 TEMPERATURE=0.2
 
 # Detect Primary LAN IP for remote access
