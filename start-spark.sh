@@ -45,7 +45,7 @@ and automatic context-shifting for agent tools (e.g. OpenCode, OMP).
 Options:
   -a, --alias NAMES       Model alias for API clients (default: spark-x2.5-4b,spark-4b,spark,gpt-4o,qwen)
   -m, --model PATH        Path to GGUF model (default: ./models/Spark-X2.5-4B-Q4_K_M.gguf)
-  -c, --ctx-slot N        Context per slot (default: 262144 for 4 slots, 131072 for 8 slots)
+  -c, --ctx-slot N        Context per slot (default: 163840 for 4 slots, 81920 for 8 slots)
   --slots N               Number of parallel agent slots (default: 4; up to 8 slots supported)
   --thinking              Enable <think> reasoning (default; uses temp 1.0 & top_p 0.95 for optimal reasoning)
   --no-thinking           Disable <think> reasoning (direct agent output, defaults to temp 0.2 for coding)
@@ -59,8 +59,8 @@ Options:
   -h, --help              Show this help message
 
 Examples:
-  ./start-spark.sh                     # 4 slots x 256k context (1M total pool, thinking on @ temp 1.0)
-  ./start-spark.sh --slots 8           # 8 slots x 128k context (1M total pool, fits in ~12.5GB VRAM)
+  ./start-spark.sh                     # 4 slots x 160k context (640k total pool, thinking on @ temp 1.0)
+  ./start-spark.sh --slots 8           # 8 slots x 80k context (640k total pool, ~11.9GB VRAM safe)
   ./start-spark.sh --no-thinking       # Direct fast responses (no <think> delay, temp 0.2 like Gemma)
   ./start-spark.sh --slots 1 -c 524288 # 1 slot x 512k single-agent maximized context
 EOF
@@ -176,12 +176,16 @@ fi
 # 3. Context Calculation (Optimized for 16GB VRAM & Spark's Hybrid SWA Architecture)
 if [[ -n "${CUSTOM_CTX}" ]]; then
     CTX_PER_SLOT="${CUSTOM_CTX}"
+elif [[ "${SLOTS}" -le 1 ]]; then
+    CTX_PER_SLOT=524288 # 512k context (1 slot, ~10.1GB VRAM)
 elif [[ "${SLOTS}" -le 2 ]]; then
-    CTX_PER_SLOT=524288 # 512k context per slot for 1-2 slots
+    CTX_PER_SLOT=262144 # 256k context per slot (512k total across 2 slots, ~10.1GB VRAM)
 elif [[ "${SLOTS}" -le 4 ]]; then
-    CTX_PER_SLOT=262144 # 256k context per slot (1M total across 4 slots, ~12GB VRAM)
+    CTX_PER_SLOT=163840 # 160k context per slot (640k total across 4 slots, ~11.9GB VRAM)
+elif [[ "${SLOTS}" -le 6 ]]; then
+    CTX_PER_SLOT=106496 # 104k context per slot (640k total across 6 slots, ~11.9GB VRAM)
 else
-    CTX_PER_SLOT=131072 # 128k context per slot (1M total across 8 slots, ~12.5GB VRAM)
+    CTX_PER_SLOT=81920  # 80k context per slot (640k total across 8 slots, ~11.9GB VRAM, leaves ~4GB headroom)
 fi
 
 TOTAL_CTX=$(( SLOTS * CTX_PER_SLOT ))
@@ -216,7 +220,7 @@ echo -e "${BOLD}Architecture:${NC}        ${GREEN}Spark2_5 (Hybrid 512-token SWA
 echo -e "${BOLD}Parallel Slots:${NC}      ${GREEN}${SLOTS} slots${NC}"
 echo -e "${BOLD}Context per Slot:${NC}    ${GREEN}${CTX_PER_SLOT} tokens ($(( CTX_PER_SLOT / 1024 ))k tokens)${NC}"
 echo -e "${BOLD}Total Context Pool:${NC}  ${GREEN}${TOTAL_CTX} tokens ($(( TOTAL_CTX / 1024 ))k tokens)${NC}"
-echo -e "${BOLD}VRAM Utilization:${NC}    ${GREEN}Optimized for 16GB VRAM (Model + 1M KV Cache ≈ 12-13GB)${NC}"
+echo -e "${BOLD}VRAM Utilization:${NC}    ${GREEN}Optimized for 16GB VRAM (Model + KV Cache ≈ 10-12GB, ~4GB headroom)${NC}"
 echo -e "${BOLD}Thinking Mode:${NC}       ${GREEN}${THINKING_STATUS}${NC}"
 echo -e "${BOLD}Temperature:${NC}         ${GREEN}${TEMPERATURE}${NC}"
 echo -e "${BOLD}Top-P:${NC}               ${GREEN}${TOP_P}${NC}"
@@ -226,13 +230,11 @@ echo -e "${BOLD}Batching:${NC}            ${GREEN}Continuous (-cb) | Chunked Pre
 echo -e "${BOLD}KV Cache Quant:${NC}      ${GREEN}Q4_0 (-ctk q4_0 -ctv q4_0)${NC}"
 echo -e "${BOLD}Tool Calling:${NC}        ${GREEN}Native Jinja Template (--jinja enabled)${NC}"
 echo -e "${BOLD}GPU Offload:${NC}         ${GREEN}100% on AMD Radeon RX 9060 XT (-ngl 99 -fa auto)${NC}"
-echo -e "
-${BOLD}${YELLOW}=== Remote Connection Info (From another machine) ===${NC}"
-echo -e "  Web UI:            ${CYAN}http://:${NC}"
-echo -e "  OpenAI API Base:   ${CYAN}http://:/v1${NC}"
+echo -e "\n${BOLD}${YELLOW}=== Remote Connection Info (From another machine) ===${NC}"
+echo -e "  Web UI:            ${CYAN}http://${LOCAL_IP}:${PORT}${NC}"
+echo -e "  OpenAI API Base:   ${CYAN}http://${LOCAL_IP}:${PORT}/v1${NC}"
 echo -e "  API Key:           ${CYAN}sk-no-key-required${NC}"
-echo -e "------------------------------------------------------
-"
+echo -e "------------------------------------------------------\n"
 
 # Enable prompt and token stream exposure in /slots for monitor drill-down
 export LLAMA_SERVER_SLOTS_DEBUG=1
