@@ -22,7 +22,8 @@ ALT_MODEL="${SCRIPT_DIR}/models/Ornith-1.5-9B-MTP-Q6_K.gguf"
 MODEL_PATH=""
 HOST="0.0.0.0"
 PORT=8080
-CTX_SIZE=131072   # 128k context (100% in VRAM at max speed)
+SLOTS=1
+CUSTOM_CTX=""
 KV_QUANT="q4_0"
 ENABLE_MTP=1
 DRAFT_N_MAX=3     # Optimal draft depth for Ornith MTP
@@ -36,13 +37,14 @@ show_help() {
     cat << EOF
 Usage: $(basename "$0") [options]
 
-Starts llama-server for Ornith-1.5-9B-MTP optimized for Single-Agent Deep Reasoning & Fast Coding,
+Starts llama-server for Ornith-1.5-9B-MTP optimized for Single/Multi-Agent Deep Reasoning & Fast Coding,
 with 100% GPU offload on AMD Radeon RX 9060 XT (16GB VRAM) and built-in MTP speculative decoding.
 
 Options:
   -m, --model PATH        Path to Ornith GGUF model
   -a, --alias NAMES       Model alias for API clients (default: ornith-1.5-9b,ornith,gpt-4o,qwen)
-  -c, --context N         Maximum context window (default: 131072 / 128k, supports up to 262144)
+  -c, --context, --ctx-slot N  Context per slot (default: 131072 for <=2 slots, 65536 for 4 slots, 32768 for 8 slots)
+  --slots N               Number of parallel agent slots (default: 1; use 2, 4, 8 for multi-agent)
   --temp N                Sampling temperature (default: 0.2, low/precise for coding)
   -p, --port PORT         HTTP server port (default: 8080)
   --kv-quant TYPE         KV Cache precision: q4_0 (default, fast) | q8_0 | f16
@@ -52,6 +54,8 @@ Options:
 
 Examples:
   ./start-ornith.sh
+  ./start-ornith.sh --slots 4
+  ./start-ornith.sh --slots 8 -c 32768
   ./start-ornith.sh --temp 0.6
   ./start-ornith.sh -c 262144
   ./start-ornith.sh -m ./models/Ornith-1.5-9B-MTP-Q6_K.gguf
@@ -68,8 +72,12 @@ while [[ $# -gt 0 ]]; do
             ALIAS="$2"
             shift 2
             ;;
-        -c|--context)
-            CTX_SIZE="$2"
+        -c|--context|--ctx-slot)
+            CUSTOM_CTX="$2"
+            shift 2
+            ;;
+        --slots)
+            SLOTS="$2"
             shift 2
             ;;
         -p|--port)
@@ -145,6 +153,19 @@ Found existing Ornith models in ./models/:"
     fi
 fi
 
+# 3. Context calculation per slot & MTP Setup
+if [[ -n "${CUSTOM_CTX}" ]]; then
+    CTX_PER_SLOT="${CUSTOM_CTX}"
+elif [[ "${SLOTS}" -le 2 ]]; then
+    CTX_PER_SLOT=131072 # 128k context per slot for 1-2 slots
+elif [[ "${SLOTS}" -le 4 ]]; then
+    CTX_PER_SLOT=65536  # 64k context per slot for 3-4 slots
+else
+    CTX_PER_SLOT=32768  # 32k context per slot for 8 slots (fits in 16GB VRAM)
+fi
+
+TOTAL_CTX=$(( SLOTS * CTX_PER_SLOT ))
+
 MTP_STATUS="Disabled"
 MTP_ARGS=()
 if [[ "${ENABLE_MTP}" -eq 1 ]]; then
@@ -154,19 +175,18 @@ fi
 
 echo -e "${BOLD}Model:${NC}               ${CYAN}${MODEL_PATH}${NC}"
 echo -e "${BOLD}API Model Alias:${NC}     ${GREEN}${ALIAS}${NC}"
-echo -e "${BOLD}Mode:${NC}                ${GREEN}Single Slot (1 Dedicated Agent / Ultra-High Speed)${NC}"
-echo -e "${BOLD}Context Size:${NC}        ${GREEN}${CTX_SIZE} tokens ($(( CTX_SIZE / 1024 ))k tokens)${NC}"
+echo -e "${BOLD}Parallel Slots:${NC}      ${GREEN}${SLOTS} slots${NC}"
+echo -e "${BOLD}Context per Slot:${NC}    ${GREEN}${CTX_PER_SLOT} tokens ($(( CTX_PER_SLOT / 1024 ))k tokens)${NC}"
+echo -e "${BOLD}Total Context Pool:${NC}  ${GREEN}${TOTAL_CTX} tokens ($(( TOTAL_CTX / 1024 ))k tokens)${NC}"
 echo -e "${BOLD}KV Cache Precision:${NC}  ${GREEN}${KV_QUANT}${NC}"
 echo -e "${BOLD}GPU Offload:${NC}         ${GREEN}100% on AMD Radeon RX 9060 XT (All 34 layers offloaded)${NC}"
 echo -e "${BOLD}Speculative Dec:${NC}     ${GREEN}${MTP_STATUS}${NC}"
 echo -e "${BOLD}Temperature:${NC}         ${GREEN}${TEMPERATURE} (low/precise for coding)${NC}"
-echo -e "
-${BOLD}${YELLOW}=== Remote Connection Info (From another machine) ===${NC}"
+echo -e "\n${BOLD}${YELLOW}=== Remote Connection Info (From another machine) ===${NC}"
 echo -e "  Web UI:            ${CYAN}http://${LOCAL_IP}:${PORT}${NC}"
 echo -e "  OpenAI API Base:   ${CYAN}http://${LOCAL_IP}:${PORT}/v1${NC}"
 echo -e "  API Key:           ${CYAN}sk-no-key-required${NC}"
-echo -e "------------------------------------------------------
-"
+echo -e "------------------------------------------------------\n"
 
 # Enable prompt and token stream exposure in /slots for monitor drill-down
 export LLAMA_SERVER_SLOTS_DEBUG=1
@@ -176,8 +196,8 @@ exec "${SERVER_BIN}" \
     --alias "${ALIAS}" \
     --host "${HOST}" \
     --port "${PORT}" \
-    -c "${CTX_SIZE}" \
-    -np 1 \
+    -c "${TOTAL_CTX}" \
+    -np "${SLOTS}" \
     -b 2048 \
     -ub 512 \
     -cb \
