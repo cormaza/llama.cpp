@@ -26,11 +26,14 @@ HOST="0.0.0.0"
 PORT=8080
 SLOTS=1
 CUSTOM_CTX=""
+CUSTOM_TEMP=""
+CUSTOM_TOP_P=""
+CUSTOM_TOP_K=""
+CUSTOM_PRESENCE=""
 KV_QUANT="q4_0"
 THREADS=4
 ENABLE_CTX_SHIFT=1
 ALIAS="gemma-4-12b"
-TEMPERATURE=0.2
 
 LOCAL_IP="$(ip -4 route get 1.1.1.1 2>/dev/null | awk '{print $7}' | head -n1 || echo "127.0.0.1")"
 
@@ -50,6 +53,9 @@ Options:
   -c, --context, --ctx-slot N  Context per slot (default: 131072 for <=4 slots, 65536 for 8 slots)
   --slots N               Number of parallel agent slots (default: 1; use 2, 4, 8 for multi-agent)
   --temp N                Sampling temperature (default: 0.2, low/precise for coding)
+  --top-p N               Top-p sampling (default: 0.95)
+  --top-k N               Top-k sampling (default: 40)
+  --presence-penalty N    Presence penalty (default: 0.0, avoids distorted paths/commands)
   -t, --threads N         Number of CPU threads (default: 4)
   --no-context-shift      Disable automatic context shifting
   -p, --port PORT         HTTP server port (default: 8080)
@@ -91,7 +97,19 @@ while [[ $# -gt 0 ]]; do
             shift 2
             ;;
         --temp|--temperature)
-            TEMPERATURE="$2"
+            CUSTOM_TEMP="$2"
+            shift 2
+            ;;
+        --top-p)
+            CUSTOM_TOP_P="$2"
+            shift 2
+            ;;
+        --top-k)
+            CUSTOM_TOP_K="$2"
+            shift 2
+            ;;
+        --presence-penalty)
+            CUSTOM_PRESENCE="$2"
             shift 2
             ;;
         -t|--threads)
@@ -121,6 +139,11 @@ while [[ $# -gt 0 ]]; do
             ;;
     esac
 done
+
+TEMPERATURE="${CUSTOM_TEMP:-0.2}"
+TOP_P="${CUSTOM_TOP_P:-0.95}"
+TOP_K="${CUSTOM_TOP_K:-40}"
+PRESENCE_PENALTY="${CUSTOM_PRESENCE:-0.0}"
 
 echo -e "${BOLD}${CYAN}======================================================${NC}"
 echo -e "${BOLD}${CYAN}  Gemma 4 Max-Context Agent Server (ROCm / HIP)       ${NC}"
@@ -167,13 +190,14 @@ fi
 
 echo -e "${BOLD}Model:${NC}               ${CYAN}${MODEL_PATH}${NC}"
 echo -e "${BOLD}API Model Alias:${NC}     ${GREEN}${ALIAS}${NC}"
+echo -e "${BOLD}Chat Template:${NC}       ${GREEN}Native Google Gemma 4 (--jinja enabled)${NC}"
 echo -e "${BOLD}Parallel Slots:${NC}      ${GREEN}${SLOTS} slots${NC}"
 echo -e "${BOLD}Context per Slot:${NC}    ${GREEN}${CTX_PER_SLOT} tokens ($(( CTX_PER_SLOT / 1024 ))k tokens)${NC}"
 echo -e "${BOLD}Total Context Pool:${NC}  ${GREEN}${TOTAL_CTX} tokens ($(( TOTAL_CTX / 1024 ))k tokens)${NC}"
 echo -e "${BOLD}CPU Threads:${NC}         ${GREEN}${THREADS} threads (-t ${THREADS})${NC}"
 echo -e "${BOLD}Context Shift:${NC}       ${GREEN}${CTX_SHIFT_STATUS}${NC}"
 echo -e "${BOLD}KV Cache Precision:${NC}  ${GREEN}${KV_QUANT}${NC}"
-echo -e "${BOLD}Temperature:${NC}         ${GREEN}${TEMPERATURE} (low/precise for coding)${NC}"
+echo -e "${BOLD}Sampling Params:${NC}     ${GREEN}temp ${TEMPERATURE} | top_p ${TOP_P} | top_k ${TOP_K} | presence ${PRESENCE_PENALTY}${NC}"
 echo -e "${BOLD}GPU Offload:${NC}         ${GREEN}100% on AMD Radeon RX 9060 XT (-ngl 99 -fa auto)${NC}"
 echo -e "${BOLD}Speculative Dec:${NC}     ${GREEN}${MTP_STATUS}${NC}"
 echo -e ""
@@ -189,6 +213,7 @@ export LLAMA_SERVER_SLOTS_DEBUG=1
 exec "${SERVER_BIN}" \
     -m "${MODEL_PATH}" \
     --alias "${ALIAS}" \
+    --jinja \
     --host "${HOST}" \
     --port "${PORT}" \
     -c "${TOTAL_CTX}" \
@@ -202,5 +227,8 @@ exec "${SERVER_BIN}" \
     -fa auto \
     -t "${THREADS}" \
     --temp "${TEMPERATURE}" \
+    --top-p "${TOP_P}" \
+    --top-k "${TOP_K}" \
+    --presence-penalty "${PRESENCE_PENALTY}" \
     "${CTX_SHIFT_ARGS[@]}" \
     "${MTP_ARGS[@]}"
