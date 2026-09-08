@@ -21,11 +21,13 @@ DEFAULT_HF_MODEL="unsloth/Qwen3.8-27B-GGUF:Q4_0"
 HF_MODEL="${DEFAULT_HF_MODEL}"
 HOST="0.0.0.0"
 PORT=8080
-CTX_SIZE=131072
+SLOTS=1
+CUSTOM_CTX=""
 KV_QUANT="q4_0"
 GPU_LAYERS=50
 ENABLE_SPEC=1
 RUN_CLI=0
+TEMPERATURE=0.2
 
 # Detect local LAN IP for remote access
 LOCAL_IP="$(ip -4 route get 1.1.1.1 2>/dev/null | awk '{print $7}' | head -n1 || echo "127.0.0.1")"
@@ -39,7 +41,9 @@ Automatically downloads and caches the model from Hugging Face Hub if needed.
 
 Options:
   --hf REPO:QUANT        Hugging Face repo and quant (default: ${DEFAULT_HF_MODEL})
-  -c, --context N        Context window size in tokens (default: 131072 / 128k)
+  -c, --context, --ctx-slot N  Context per slot (default: 131072 for 1 slot, 65536 for 2 slots, 32768 for 4 slots)
+  --slots N              Number of parallel agent slots (default: 1; use 2, 4 for multi-agent)
+  --temp N               Sampling temperature (default: 0.2, low/precise for coding)
   -p, --port PORT        Server port (default: 8080)
   --host HOST            Bind address (default: 0.0.0.0)
   --kv-quant TYPE        KV cache precision: q4_0 (default) | q8_0 | f16
@@ -50,7 +54,9 @@ Options:
 
 Examples:
   ./start-qwen-hf.sh
-  ./start-qwen-hf.sh -c 65536
+  ./start-qwen-hf.sh --slots 2
+  ./start-qwen-hf.sh --slots 4 -c 32768
+  ./start-qwen-hf.sh --temp 0.6
   ./start-qwen-hf.sh --cli
   ./start-qwen-hf.sh --hf unsloth/Qwen3.8-27B-GGUF:UD-IQ4_XS
 EOF
@@ -62,8 +68,16 @@ while [[ $# -gt 0 ]]; do
             HF_MODEL="$2"
             shift 2
             ;;
-        -c|--context)
-            CTX_SIZE="$2"
+        -c|--context|--ctx-slot)
+            CUSTOM_CTX="$2"
+            shift 2
+            ;;
+        --slots)
+            SLOTS="$2"
+            shift 2
+            ;;
+        --temp|--temperature)
+            TEMPERATURE="$2"
             shift 2
             ;;
         -p|--port)
@@ -125,11 +139,29 @@ if [[ "${ENABLE_SPEC}" -eq 1 ]]; then
     SPEC_ARGS+=("--spec-type" "ngram-simple" "--spec-ngram-simple-size-m" "48")
 fi
 
+# Context calculation per slot
+if [[ -n "${CUSTOM_CTX}" ]]; then
+    CTX_PER_SLOT="${CUSTOM_CTX}"
+elif [[ "${SLOTS}" -le 1 ]]; then
+    CTX_PER_SLOT=131072 # 128k context for single slot
+elif [[ "${SLOTS}" -le 2 ]]; then
+    CTX_PER_SLOT=65536  # 64k context per slot for 2 slots
+elif [[ "${SLOTS}" -le 4 ]]; then
+    CTX_PER_SLOT=32768  # 32k context per slot for 4 slots
+else
+    CTX_PER_SLOT=16384  # 16k context per slot for 8 slots
+fi
+
+TOTAL_CTX=$(( SLOTS * CTX_PER_SLOT ))
+
 echo -e "${BOLD}HF Model:${NC}            ${CYAN}${HF_MODEL}${NC}"
-echo -e "${BOLD}Context Size:${NC}        ${GREEN}${CTX_SIZE} tokens ($(( CTX_SIZE / 1024 ))k)${NC}"
+echo -e "${BOLD}Parallel Slots:${NC}      ${GREEN}${SLOTS} slots${NC}"
+echo -e "${BOLD}Context per Slot:${NC}    ${GREEN}${CTX_PER_SLOT} tokens ($(( CTX_PER_SLOT / 1024 ))k)${NC}"
+echo -e "${BOLD}Total Context Pool:${NC}  ${GREEN}${TOTAL_CTX} tokens ($(( TOTAL_CTX / 1024 ))k)${NC}"
 echo -e "${BOLD}KV Cache Precision:${NC}  ${GREEN}${KV_QUANT}${NC}"
 echo -e "${BOLD}GPU Offload:${NC}         ${GREEN}${GPU_LAYERS} layers -> AMD Radeon RX 9060 XT (-fa auto)${NC}"
 echo -e "${BOLD}Speculative Dec:${NC}     ${GREEN}${SPEC_STATUS}${NC}"
+echo -e "${BOLD}Temperature:${NC}         ${GREEN}${TEMPERATURE} (low/precise for coding)${NC}"
 echo -e "${BOLD}CPU Threads:${NC}         ${GREEN}8 P-cores (Intel Core Ultra 7 265K)${NC}"
 
 if [[ "${RUN_CLI}" -eq 1 ]]; then
@@ -137,7 +169,7 @@ if [[ "${RUN_CLI}" -eq 1 ]]; then
     echo -e "------------------------------------------------------\n"
     exec "${CLI_BIN}" \
         -hf "${HF_MODEL}" \
-        -c "${CTX_SIZE}" \
+        -c "${CTX_PER_SLOT}" \
         -b 2048 \
         -ub 512 \
         -ctk "${KV_QUANT}" \
@@ -145,6 +177,7 @@ if [[ "${RUN_CLI}" -eq 1 ]]; then
         -ngl "${GPU_LAYERS}" \
         -fa auto \
         -t 8 \
+        --temp "${TEMPERATURE}" \
         "${SPEC_ARGS[@]}" \
         -co -cnv
 else
@@ -154,12 +187,16 @@ else
     echo -e "  OpenAI API Base:   ${CYAN}http://${LOCAL_IP}:${PORT}/v1${NC}"
     echo -e "  Localhost Base:    ${CYAN}http://127.0.0.1:${PORT}/v1${NC}"
     echo -e "------------------------------------------------------\n"
+
+    # Enable prompt and token stream exposure in /slots for monitor drill-down
+    export LLAMA_SERVER_SLOTS_DEBUG=1
+
     exec "${SERVER_BIN}" \
         -hf "${HF_MODEL}" \
         --host "${HOST}" \
         --port "${PORT}" \
-        -c "${CTX_SIZE}" \
-        -np 1 \
+        -c "${TOTAL_CTX}" \
+        -np "${SLOTS}" \
         -b 2048 \
         -ub 512 \
         -cb \
@@ -168,5 +205,6 @@ else
         -ngl "${GPU_LAYERS}" \
         -fa auto \
         -t 8 \
+        --temp "${TEMPERATURE}" \
         "${SPEC_ARGS[@]}"
 fi
