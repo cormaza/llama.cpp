@@ -31,6 +31,9 @@ THREADS=4
 ENABLE_CTX_SHIFT=1
 TEMPERATURE=0.2
 
+# Detect Primary LAN IP for remote access
+LOCAL_IP="$(ip -4 route get 1.1.1.1 2>/dev/null | awk '{print $7}' | head -n1 || echo "127.0.0.1")"
+
 show_help() {
     cat << EOF
 Usage: $(basename "$0") [options]
@@ -44,7 +47,7 @@ Options:
   -m, --model PATH        Path to GGUF model (default: ./models/gemma-4-12b-it-UD-Q4_K_XL.gguf)
   --mtp PATH              Path to MTP draft model (default: ./models/mtp-gemma-4-12b-it-Q8_0.gguf)
   --no-mtp                Disable MTP (allows 128k context per slot without VRAM overflow)
-  -c, --ctx-slot N        Context per slot (default: 131072 for <=4 slots, 65536 for 8 slots)
+  -c, --context, --ctx-slot N  Context per slot (default: 131072 for <=4 slots, 65536 for 8 slots)
   --temp N                Sampling temperature (default: 0.2, low/precise for coding)
   -t, --threads N         Number of CPU threads (default: 4, reduced to avoid CPU contention)
   --context-shift         Enable context shifting for infinite text generation (default: enabled)
@@ -85,7 +88,7 @@ while [[ $# -gt 0 ]]; do
             TEMPERATURE="$2"
             shift 2
             ;;
-        -c|--ctx-slot)
+        -c|--context|--ctx-slot)
             CUSTOM_CTX="$2"
             shift 2
             ;;
@@ -211,7 +214,10 @@ echo -e "${BOLD}Batching:${NC}            ${GREEN}Continuous (-cb) | Chunked Pre
 echo -e "${BOLD}KV Cache Quant:${NC}      ${GREEN}Q4_0 (-ctk q4_0 -ctv q4_0)${NC}"
 echo -e "${BOLD}Temperature:${NC}         ${GREEN}${TEMPERATURE} (low/precise for coding)${NC}"
 echo -e "${BOLD}MTP Speculative:${NC}     ${GREEN}${MTP_STATUS}${NC}"
-echo -e "${BOLD}Server Endpoint:${NC}     ${CYAN}http://${HOST}:${PORT}${NC}"
+echo -e "\n${BOLD}${YELLOW}=== Remote Connection Info (From another machine) ===${NC}"
+echo -e "  Web UI:            ${CYAN}http://${LOCAL_IP}:${PORT}${NC}"
+echo -e "  OpenAI API Base:   ${CYAN}http://${LOCAL_IP}:${PORT}/v1${NC}"
+echo -e "  API Key:           ${CYAN}sk-no-key-required${NC}"
 echo -e "------------------------------------------------------\n"
 
 # Enable prompt and token stream exposure in /slots for monitor drill-down
