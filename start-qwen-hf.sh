@@ -23,11 +23,15 @@ HOST="0.0.0.0"
 PORT=8080
 SLOTS=1
 CUSTOM_CTX=""
+CUSTOM_TEMP=""
+CUSTOM_TOP_P=""
+CUSTOM_TOP_K=""
+CUSTOM_PRESENCE=""
+ENABLE_THINKING=1
 KV_QUANT="q4_0"
 GPU_LAYERS=50
 ENABLE_SPEC=1
 RUN_CLI=0
-TEMPERATURE=0.2
 
 # Detect local LAN IP for remote access
 LOCAL_IP="$(ip -4 route get 1.1.1.1 2>/dev/null | awk '{print $7}' | head -n1 || echo "127.0.0.1")"
@@ -36,14 +40,20 @@ show_help() {
     cat << EOF
 Usage: $(basename "$0") [options]
 
-Runs unsloth/Qwen3.8-27B-GGUF:Q4_0 with full AMD ROCm and Intel CPU optimizations.
+Runs unsloth/Qwen3.8-27B-GGUF:Q4_0 with full AMD ROCm and Intel CPU optimizations,
+with Froggeric Fixed Chat Templates and official sampling parameters for Qwen 3.8.
 Automatically downloads and caches the model from Hugging Face Hub if needed.
 
 Options:
   --hf REPO:QUANT        Hugging Face repo and quant (default: ${DEFAULT_HF_MODEL})
   -c, --context, --ctx-slot N  Context per slot (default: 131072 for 1 slot, 65536 for 2 slots, 32768 for 4 slots)
   --slots N              Number of parallel agent slots (default: 1; use 2, 4 for multi-agent)
-  --temp N               Sampling temperature (default: 0.2, low/precise for coding)
+  --thinking             Enable reasoning mode (default; uses temp 1.0, top_p 0.95, top_k 20)
+  --no-thinking          Disable reasoning mode (direct agent output; uses temp 0.7, top_p 0.80, top_k 20, presence 1.5)
+  --temp N               Sampling temperature override (default: 1.0 with thinking, 0.7 without thinking)
+  --top-p N              Top-p sampling override (default: 0.95 with thinking, 0.80 without thinking)
+  --top-k N              Top-k sampling override (default: 20)
+  --presence-penalty N   Presence penalty override (default: 0.0 with thinking, 1.5 without thinking)
   -p, --port PORT        Server port (default: 8080)
   --host HOST            Bind address (default: 0.0.0.0)
   --kv-quant TYPE        KV cache precision: q4_0 (default) | q8_0 | f16
@@ -53,7 +63,8 @@ Options:
   -h, --help             Show this help message
 
 Examples:
-  ./start-qwen-hf.sh
+  ./start-qwen-hf.sh               # Default thinking mode (temp 1.0, top_p 0.95, deepseek reasoning)
+  ./start-qwen-hf.sh --no-thinking # Direct fast coding (temp 0.7, top_p 0.80, presence 1.5)
   ./start-qwen-hf.sh --slots 2
   ./start-qwen-hf.sh --slots 4 -c 32768
   ./start-qwen-hf.sh --temp 0.6
@@ -76,8 +87,28 @@ while [[ $# -gt 0 ]]; do
             SLOTS="$2"
             shift 2
             ;;
+        --thinking)
+            ENABLE_THINKING=1
+            shift
+            ;;
+        --no-thinking)
+            ENABLE_THINKING=0
+            shift
+            ;;
         --temp|--temperature)
-            TEMPERATURE="$2"
+            CUSTOM_TEMP="$2"
+            shift 2
+            ;;
+        --top-p)
+            CUSTOM_TOP_P="$2"
+            shift 2
+            ;;
+        --top-k)
+            CUSTOM_TOP_K="$2"
+            shift 2
+            ;;
+        --presence-penalty)
+            CUSTOM_PRESENCE="$2"
             shift 2
             ;;
         -p|--port)
@@ -154,6 +185,30 @@ fi
 
 TOTAL_CTX=$(( SLOTS * CTX_PER_SLOT ))
 
+# Template & Sampling Configuration (Froggeric Qwen-Fixed Recommendations)
+JINJA_ARGS=("--jinja")
+if [[ "${ENABLE_THINKING}" -eq 1 ]]; then
+    TEMPERATURE="${CUSTOM_TEMP:-1.0}"
+    TOP_P="${CUSTOM_TOP_P:-0.95}"
+    TOP_K="${CUSTOM_TOP_K:-20}"
+    PRESENCE_PENALTY="${CUSTOM_PRESENCE:-0.0}"
+    THINKING_STATUS="Active (Froggeric Fixed Jinja, temp ${TEMPERATURE}, top_p ${TOP_P}, top_k ${TOP_K}, presence ${PRESENCE_PENALTY})"
+    if [[ -f "${SCRIPT_DIR}/models/templates/Qwen-Fixed.jinja" ]]; then
+        JINJA_ARGS+=("--chat-template-file" "${SCRIPT_DIR}/models/templates/Qwen-Fixed.jinja")
+    fi
+    REASONING_ARGS=("--reasoning-format" "deepseek")
+else
+    TEMPERATURE="${CUSTOM_TEMP:-0.7}"
+    TOP_P="${CUSTOM_TOP_P:-0.80}"
+    TOP_K="${CUSTOM_TOP_K:-20}"
+    PRESENCE_PENALTY="${CUSTOM_PRESENCE:-1.5}"
+    THINKING_STATUS="Disabled (Direct agent mode, temp ${TEMPERATURE}, top_p ${TOP_P}, top_k ${TOP_K}, presence ${PRESENCE_PENALTY})"
+    if [[ -f "${SCRIPT_DIR}/models/templates/Qwen-Fixed-no-thinking.jinja" ]]; then
+        JINJA_ARGS+=("--chat-template-file" "${SCRIPT_DIR}/models/templates/Qwen-Fixed-no-thinking.jinja")
+    fi
+    REASONING_ARGS=("--reasoning-format" "none")
+fi
+
 echo -e "${BOLD}HF Model:${NC}            ${CYAN}${HF_MODEL}${NC}"
 echo -e "${BOLD}Parallel Slots:${NC}      ${GREEN}${SLOTS} slots${NC}"
 echo -e "${BOLD}Context per Slot:${NC}    ${GREEN}${CTX_PER_SLOT} tokens ($(( CTX_PER_SLOT / 1024 ))k)${NC}"
@@ -161,7 +216,9 @@ echo -e "${BOLD}Total Context Pool:${NC}  ${GREEN}${TOTAL_CTX} tokens ($(( TOTAL
 echo -e "${BOLD}KV Cache Precision:${NC}  ${GREEN}${KV_QUANT}${NC}"
 echo -e "${BOLD}GPU Offload:${NC}         ${GREEN}${GPU_LAYERS} layers -> AMD Radeon RX 9060 XT (-fa auto)${NC}"
 echo -e "${BOLD}Speculative Dec:${NC}     ${GREEN}${SPEC_STATUS}${NC}"
-echo -e "${BOLD}Temperature:${NC}         ${GREEN}${TEMPERATURE} (low/precise for coding)${NC}"
+echo -e "${BOLD}Thinking Mode:${NC}       ${GREEN}${THINKING_STATUS}${NC}"
+echo -e "${BOLD}Chat Template:${NC}       ${GREEN}Froggeric Qwen-Fixed v22.5 (--jinja enabled)${NC}"
+echo -e "${BOLD}Sampling Params:${NC}     ${GREEN}temp ${TEMPERATURE} | top_p ${TOP_P} | top_k ${TOP_K} | presence ${PRESENCE_PENALTY}${NC}"
 echo -e "${BOLD}CPU Threads:${NC}         ${GREEN}8 P-cores (Intel Core Ultra 7 265K)${NC}"
 
 if [[ "${RUN_CLI}" -eq 1 ]]; then
@@ -178,6 +235,9 @@ if [[ "${RUN_CLI}" -eq 1 ]]; then
         -fa auto \
         -t 8 \
         --temp "${TEMPERATURE}" \
+        --top-p "${TOP_P}" \
+        --top-k "${TOP_K}" \
+        --presence-penalty "${PRESENCE_PENALTY}" \
         "${SPEC_ARGS[@]}" \
         -co -cnv
 else
@@ -206,5 +266,10 @@ else
         -fa auto \
         -t 8 \
         --temp "${TEMPERATURE}" \
+        --top-p "${TOP_P}" \
+        --top-k "${TOP_K}" \
+        --presence-penalty "${PRESENCE_PENALTY}" \
+        "${JINJA_ARGS[@]}" \
+        "${REASONING_ARGS[@]}" \
         "${SPEC_ARGS[@]}"
 fi
