@@ -45,7 +45,7 @@ and automatic context-shifting for agent tools (e.g. OpenCode, OMP).
 Options:
   -a, --alias NAMES       Model alias for API clients (default: spark-x2.5-4b,spark-4b,spark,gpt-4o,qwen)
   -m, --model PATH        Path to GGUF model (default: ./models/Spark-X2.5-4B-Q4_K_M.gguf)
-  -c, --ctx-slot N        Context per slot (default: 163840 for 4 slots, 81920 for 8 slots)
+  -c, --context, --ctx-slot N  Context per slot (default: 163840 for 4 slots, 81920 for 8 slots)
   --slots N               Number of parallel agent slots (default: 4; up to 8 slots supported)
   --thinking              Enable <think> reasoning (default; uses temp 1.0 & top_p 0.95 for optimal reasoning)
   --no-thinking           Disable <think> reasoning (direct agent output, defaults to temp 0.2 for coding)
@@ -76,7 +76,7 @@ while [[ $# -gt 0 ]]; do
             MODEL_PATH="$2"
             shift 2
             ;;
-        -c|--ctx-slot)
+        -c|--context|--ctx-slot)
             CUSTOM_CTX="$2"
             shift 2
             ;;

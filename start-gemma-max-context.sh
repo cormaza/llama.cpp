@@ -24,11 +24,13 @@ MTP_PATH="${DEFAULT_MTP}"
 ENABLE_MTP=1
 HOST="0.0.0.0"
 PORT=8080
-CTX_SIZE=131072
+SLOTS=1
+CUSTOM_CTX=""
 KV_QUANT="q4_0"
 THREADS=4
 ENABLE_CTX_SHIFT=1
 ALIAS="gemma-4-12b"
+TEMPERATURE=0.2
 
 LOCAL_IP="$(ip -4 route get 1.1.1.1 2>/dev/null | awk '{print $7}' | head -n1 || echo "127.0.0.1")"
 
@@ -36,16 +38,18 @@ show_help() {
     cat << EOF
 Usage: $(basename "$0") [options]
 
-Starts llama-server for Gemma 4 12B optimized for Single-Agent High-Speed Execution (OMP),
-with maximized context window (128k default, up to 256k), 4 CPU threads, automatic context
-shifting to prevent agent halts, and MTP speculative acceleration (~42 t/s).
+Starts llama-server for Gemma 4 12B optimized for High-Speed Agentic Workflows,
+featuring MTP speculative acceleration (~42 t/s), continuous batching,
+and automatic context-shifting for continuous agent operations (e.g. OMP, OpenCode).
 
 Options:
   -a, --alias NAMES       Model alias for API clients (default: gemma-4-12b,gemma-4,gemma,gpt-4o)
   -m, --model PATH        Path to GGUF model (default: ./models/gemma-4-12b-it-UD-Q4_K_XL.gguf)
   --mtp PATH              Path to MTP draft model (default: ./models/mtp-gemma-4-12b-it-Q8_0.gguf)
   --no-mtp                Disable MTP speculative decoding
-  -c, --context N         Context window size (default: 131072 / 128k; supports 262144 / 256k)
+  -c, --context, --ctx-slot N  Context per slot (default: 131072 for <=4 slots, 65536 for 8 slots)
+  --slots N               Number of parallel agent slots (default: 1; use 2, 4, 8 for multi-agent)
+  --temp N                Sampling temperature (default: 0.2, low/precise for coding)
   -t, --threads N         Number of CPU threads (default: 4)
   --no-context-shift      Disable automatic context shifting
   -p, --port PORT         HTTP server port (default: 8080)
@@ -54,8 +58,9 @@ Options:
 
 Examples:
   ./start-gemma-max-context.sh               # 1 slot x 128k context with MTP (~42 t/s)
-  ./start-gemma-max-context.sh -c 262144     # 1 slot x 256k deep context with MTP
-  ./start-gemma-max-context.sh -t 2          # 1 slot x 128k with only 2 CPU threads
+  ./start-gemma-max-context.sh --slots 4     # 4 slots x 128k context with MTP
+  ./start-gemma-max-context.sh --slots 8     # 8 slots x 64k context with MTP (fits in 16GB VRAM)
+  ./start-gemma-max-context.sh -c 262144     # 1 slot x 256k deep context
 EOF
 }
 
@@ -77,8 +82,16 @@ while [[ $# -gt 0 ]]; do
             ENABLE_MTP=0
             shift
             ;;
-        -c|--context)
-            CTX_SIZE="$2"
+        -c|--context|--ctx-slot)
+            CUSTOM_CTX="$2"
+            shift 2
+            ;;
+        --slots)
+            SLOTS="$2"
+            shift 2
+            ;;
+        --temp|--temperature)
+            TEMPERATURE="$2"
             shift 2
             ;;
         -t|--threads)
@@ -125,12 +138,24 @@ if [[ ! -f "${MODEL_PATH}" ]]; then
     exit 1
 fi
 
+# 3. Context calculation per slot & MTP Setup
 MTP_ARGS=()
 MTP_STATUS="Disabled"
 if [[ "${ENABLE_MTP}" -eq 1 && -f "${MTP_PATH}" ]]; then
     MTP_STATUS="Active (Multi-Token Prediction: $(basename "${MTP_PATH}"))"
     MTP_ARGS+=("--spec-type" "draft-mtp" "-md" "${MTP_PATH}" "-ngld" "99")
+    if [[ -n "${CUSTOM_CTX}" ]]; then
+        CTX_PER_SLOT="${CUSTOM_CTX}"
+    elif [[ "${SLOTS}" -le 4 ]]; then
+        CTX_PER_SLOT=131072 # 128k context per slot for 1-4 slots
+    else
+        CTX_PER_SLOT=65536  # 64k context per slot for 8 slots (fits MTP in 16GB VRAM)
+    fi
+else
+    CTX_PER_SLOT=${CUSTOM_CTX:-131072}
 fi
+
+TOTAL_CTX=$(( SLOTS * CTX_PER_SLOT ))
 
 CTX_SHIFT_ARGS=()
 if [[ "${ENABLE_CTX_SHIFT}" -eq 1 ]]; then
@@ -142,14 +167,15 @@ fi
 
 echo -e "${BOLD}Model:${NC}               ${CYAN}${MODEL_PATH}${NC}"
 echo -e "${BOLD}API Model Alias:${NC}     ${GREEN}${ALIAS}${NC}"
-echo -e "${BOLD}Mode:${NC}                ${GREEN}Single Slot (1 Dedicated Agent / Max Context)${NC}"
-echo -e "${BOLD}Context Size:${NC}        ${GREEN}${CTX_SIZE} tokens ($(( CTX_SIZE / 1024 ))k tokens)${NC}"
+echo -e "${BOLD}Parallel Slots:${NC}      ${GREEN}${SLOTS} slots${NC}"
+echo -e "${BOLD}Context per Slot:${NC}    ${GREEN}${CTX_PER_SLOT} tokens ($(( CTX_PER_SLOT / 1024 ))k tokens)${NC}"
+echo -e "${BOLD}Total Context Pool:${NC}  ${GREEN}${TOTAL_CTX} tokens ($(( TOTAL_CTX / 1024 ))k tokens)${NC}"
 echo -e "${BOLD}CPU Threads:${NC}         ${GREEN}${THREADS} threads (-t ${THREADS})${NC}"
 echo -e "${BOLD}Context Shift:${NC}       ${GREEN}${CTX_SHIFT_STATUS}${NC}"
 echo -e "${BOLD}KV Cache Precision:${NC}  ${GREEN}${KV_QUANT}${NC}"
+echo -e "${BOLD}Temperature:${NC}         ${GREEN}${TEMPERATURE} (low/precise for coding)${NC}"
 echo -e "${BOLD}GPU Offload:${NC}         ${GREEN}100% on AMD Radeon RX 9060 XT (-ngl 99 -fa auto)${NC}"
 echo -e "${BOLD}Speculative Dec:${NC}     ${GREEN}${MTP_STATUS}${NC}"
-echo -e "${BOLD}Anti-Loop Samplers:${NC}  ${GREEN}DRY (mult 0.8, base 1.75, len 2) + Repeat Penalty 1.1 + Temp 0.7${NC}"
 echo -e ""
 echo -e "${BOLD}${YELLOW}=== Connection Info (for OMP / OpenCode / Cursor) ===${NC}"
 echo -e "  Endpoint:          ${CYAN}http://127.0.0.1:${PORT}${NC}"
@@ -157,13 +183,16 @@ echo -e "  OpenAI API Base:   ${CYAN}http://127.0.0.1:${PORT}/v1${NC}"
 echo -e "  Network URL:       ${CYAN}http://${LOCAL_IP}:${PORT}${NC}"
 echo -e "------------------------------------------------------\n"
 
+# Enable prompt and token stream exposure in /slots for monitor drill-down
+export LLAMA_SERVER_SLOTS_DEBUG=1
+
 exec "${SERVER_BIN}" \
     -m "${MODEL_PATH}" \
     --alias "${ALIAS}" \
     --host "${HOST}" \
     --port "${PORT}" \
-    -c "${CTX_SIZE}" \
-    -np 1 \
+    -c "${TOTAL_CTX}" \
+    -np "${SLOTS}" \
     -b 2048 \
     -ub 512 \
     -cb \
@@ -172,11 +201,6 @@ exec "${SERVER_BIN}" \
     -ngl 99 \
     -fa auto \
     -t "${THREADS}" \
-    --temp 0.7 \
-    --repeat-penalty 1.1 \
-    --dry-multiplier 0.8 \
-    --dry-base 1.75 \
-    --dry-allowed-length 2 \
-    --dry-penalty-last-n 256 \
+    --temp "${TEMPERATURE}" \
     "${CTX_SHIFT_ARGS[@]}" \
     "${MTP_ARGS[@]}"
