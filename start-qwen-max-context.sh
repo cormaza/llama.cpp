@@ -17,8 +17,10 @@ SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 BIN_DIR="${SCRIPT_DIR}/build-amd/bin"
 SERVER_BIN="${BIN_DIR}/llama-server"
 
-DEFAULT_MODEL="${SCRIPT_DIR}/models/Qwen3.8-27B-UD-Q3_K_XL.gguf"
-ALT_MODEL="${SCRIPT_DIR}/models/Qwen3.8-27B-UD-Q4_K_M.gguf"
+DEFAULT_MODEL="${SCRIPT_DIR}/models/Qwen3.8-27B-UD-Q2_K_XL.gguf"
+ALT_MODEL_IQ3="${SCRIPT_DIR}/models/Qwen3.8-27B-UD-IQ3_XXS.gguf"
+ALT_MODEL_Q3="${SCRIPT_DIR}/models/Qwen3.8-27B-UD-Q3_K_XL.gguf"
+ALT_MODEL_Q4="${SCRIPT_DIR}/models/Qwen3.8-27B-UD-Q4_K_M.gguf"
 DEFAULT_MTP="${SCRIPT_DIR}/models/mtp-Qwen3.8-27B-Q4_0.gguf"
 MODEL_PATH=""
 MTP_PATH=""
@@ -50,7 +52,7 @@ and official sampling parameters for Qwen 3.8.
 
 Options:
   -a, --alias NAMES       Model alias for API clients (default: qwen-3.8-27b,qwen-27b,qwen,gpt-4o)
-  -m, --model PATH        Path to GGUF model (default: ./models/Qwen3.8-27B-UD-Q3_K_XL.gguf)
+  -m, --model PATH        Path to GGUF model (default: ./models/Qwen3.8-27B-UD-Q2_K_XL.gguf or Q3_K_XL)
   --mtp PATH              Path to MTP draft model (default: ./models/mtp-Qwen3.8-27B-Q4_0.gguf)
   --no-mtp                Disable MTP (falls back to N-Gram speculative decoding)
   -c, --context, --ctx-slot N  Context per slot (default: 131072 for 1 slot, 65536 for 2 slots, 32768 for 4 slots)
@@ -63,7 +65,7 @@ Options:
   --presence-penalty N    Presence penalty override (default: 0.0 with thinking, 1.5 without thinking)
   -p, --port PORT         HTTP server port (default: 8080)
   --kv-quant TYPE         KV Cache precision: q4_0 (default, fast) | q8_0 | f16
-  --ngl N                 Number of layers to offload to GPU (default: 42 with MTP, 50 without MTP)
+  --ngl N                 Number of layers to offload to GPU (default: 99 for <11.5GB models; 42/50 for >12GB)
   --no-spec               Disable all speculative decoding
   -h, --help              Show this help message
 
@@ -171,8 +173,12 @@ fi
 if [[ -z "${MODEL_PATH}" ]]; then
     if [[ -f "${DEFAULT_MODEL}" ]]; then
         MODEL_PATH="${DEFAULT_MODEL}"
-    elif [[ -f "${ALT_MODEL}" ]]; then
-        MODEL_PATH="${ALT_MODEL}"
+    elif [[ -f "${ALT_MODEL_IQ3}" ]]; then
+        MODEL_PATH="${ALT_MODEL_IQ3}"
+    elif [[ -f "${ALT_MODEL_Q3}" ]]; then
+        MODEL_PATH="${ALT_MODEL_Q3}"
+    elif [[ -f "${ALT_MODEL_Q4}" ]]; then
+        MODEL_PATH="${ALT_MODEL_Q4}"
     else
         FOUND_MODELS=($(find "${SCRIPT_DIR}/models" -maxdepth 1 -iname "*qwen*27b*.gguf" ! -iname "mtp-*" 2>/dev/null || true))
         if [[ ${#FOUND_MODELS[@]} -gt 0 ]]; then
@@ -197,10 +203,22 @@ Select a model from ./models/:"
     fi
 fi
 
-# 3. Setup MTP or Speculative Decoding
+# 3. Setup MTP or Speculative Decoding & GPU Offload
 SPEC_STATUS="Disabled"
 SPEC_ARGS=()
-GPU_LAYERS=50
+
+MODEL_SIZE_BYTES=0
+if [[ -f "${MODEL_PATH}" ]]; then
+    MODEL_SIZE_BYTES=$(stat -c%s "${MODEL_PATH}" 2>/dev/null || echo 0)
+fi
+
+# Models under 11.5 GB (Q2_K_XL 9.15GB, IQ3_XXS 10.18GB) fit 100% in 16GB VRAM
+if [[ "${MODEL_SIZE_BYTES}" -gt 0 && "${MODEL_SIZE_BYTES}" -lt 11500000000 ]]; then
+    DEFAULT_GPU_LAYERS=99
+else
+    # Heavy models (>=12GB like Q3_K_XL / Q4_K_M) need partial offload to prevent HIP OOM
+    DEFAULT_GPU_LAYERS=50
+fi
 
 if [[ "${ENABLE_SPEC}" -eq 1 ]]; then
     if [[ "${ENABLE_MTP}" -eq 1 ]]; then
@@ -211,18 +229,20 @@ if [[ "${ENABLE_SPEC}" -eq 1 ]]; then
         if [[ -n "${MTP_PATH}" && -f "${MTP_PATH}" ]]; then
             SPEC_STATUS="Active (Multi-Token Prediction: $(basename "${MTP_PATH}"))"
             SPEC_ARGS+=("--spec-type" "draft-mtp" "-md" "${MTP_PATH}" "-ngld" "99")
-            GPU_LAYERS=42 # Balanced offload: keeps model + MTP + KV cache safely in 16GB VRAM
+            if [[ "${MODEL_SIZE_BYTES}" -ge 11500000000 ]]; then
+                DEFAULT_GPU_LAYERS=42 # Heavy model + MTP: offload 42 layers to avoid HIP OOM
+            fi
         else
             SPEC_STATUS="Active (N-Gram Prompt Lookup, m=48)"
             SPEC_ARGS+=("--spec-type" "ngram-simple" "--spec-ngram-simple-size-m" "48")
-            GPU_LAYERS=50
         fi
     else
         SPEC_STATUS="Active (N-Gram Prompt Lookup, m=48)"
         SPEC_ARGS+=("--spec-type" "ngram-simple" "--spec-ngram-simple-size-m" "48")
-        GPU_LAYERS=50
     fi
 fi
+
+GPU_LAYERS="${CUSTOM_NGL:-${DEFAULT_GPU_LAYERS}}"
 
 # 4. Context calculation per slot
 if [[ -n "${CUSTOM_CTX}" ]]; then
@@ -238,10 +258,6 @@ else
 fi
 
 TOTAL_CTX=$(( SLOTS * CTX_PER_SLOT ))
-
-if [[ -n "${CUSTOM_NGL}" ]]; then
-    GPU_LAYERS="${CUSTOM_NGL}"
-fi
 
 # 5. Template & Sampling Configuration (Froggeric Qwen-Fixed Recommendations)
 JINJA_ARGS=("--jinja")
@@ -267,13 +283,19 @@ else
     REASONING_ARGS=("--reasoning-format" "none")
 fi
 
+if [[ "${GPU_LAYERS}" -ge 65 ]]; then
+    OFFLOAD_DESC="All 65 layers offloaded (100% in GPU VRAM)"
+else
+    OFFLOAD_DESC="${GPU_LAYERS} layers to GPU (Hybrid mode: $(( 65 - GPU_LAYERS )) layers on CPU)"
+fi
+
 echo -e "${BOLD}Model:${NC}               ${CYAN}${MODEL_PATH}${NC}"
 echo -e "${BOLD}API Model Alias:${NC}     ${GREEN}${ALIAS}${NC}"
 echo -e "${BOLD}Parallel Slots:${NC}      ${GREEN}${SLOTS} slots${NC}"
 echo -e "${BOLD}Context per Slot:${NC}    ${GREEN}${CTX_PER_SLOT} tokens ($(( CTX_PER_SLOT / 1024 ))k tokens)${NC}"
 echo -e "${BOLD}Total Context Pool:${NC}  ${GREEN}${TOTAL_CTX} tokens ($(( TOTAL_CTX / 1024 ))k tokens)${NC}"
 echo -e "${BOLD}KV Cache Precision:${NC}  ${GREEN}${KV_QUANT}${NC}"
-echo -e "${BOLD}GPU Offload:${NC}         ${GREEN}${GPU_LAYERS} layers to AMD Radeon RX 9060 XT (-ngl ${GPU_LAYERS} -fa auto)${NC}"
+echo -e "${BOLD}GPU Offload:${NC}         ${GREEN}${OFFLOAD_DESC} (-ngl ${GPU_LAYERS} -fa auto)${NC}"
 echo -e "${BOLD}Speculative Dec:${NC}     ${GREEN}${SPEC_STATUS}${NC}"
 echo -e "${BOLD}Thinking Mode:${NC}       ${GREEN}${THINKING_STATUS}${NC}"
 echo -e "${BOLD}Chat Template:${NC}       ${GREEN}Froggeric Qwen-Fixed v22.5 (--jinja enabled)${NC}"
