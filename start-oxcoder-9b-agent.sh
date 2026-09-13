@@ -21,7 +21,10 @@ DEFAULT_MODEL="${SCRIPT_DIR}/models/OxCoder-9B.Q4_K_M.gguf"
 ALT_MODEL_Q5="${SCRIPT_DIR}/models/OxCoder-9B.Q5_K_M.gguf"
 ALT_MODEL_Q8="${SCRIPT_DIR}/models/OxCoder-9B.Q8_0.gguf"
 ALT_MODEL_IQ3="${SCRIPT_DIR}/models/OxCoder-9B.i1-IQ3_XXS.gguf"
+DEFAULT_MMPROJ="${SCRIPT_DIR}/models/OxCoder-9B.mmproj-Q8_0.gguf"
 MODEL_PATH=""
+MMPROJ_PATH=""
+ENABLE_MMPROJ=1
 HOST="0.0.0.0"
 PORT=8080
 SLOTS=4
@@ -47,11 +50,13 @@ Usage: $(basename "$0") [options]
 
 Starts llama-server for OxCoder-9B (OrionLLM / Qwen 3.5 Hybrid) optimized for
 Multi-Agent Coding Workflows, with Froggeric v21.3 Jinja templates, N-Gram speculative
-decoding, and 100% GPU offload on AMD Radeon RX 9060 XT (16GB VRAM).
+decoding, Vision Projector (mmproj), and 100% GPU offload on AMD Radeon RX 9060 XT (16GB VRAM).
 
 Options:
   -a, --alias NAMES       Model alias for API clients (default: oxcoder-9b,oxcoder,gpt-4o)
   -m, --model PATH        Path to GGUF model (default: ./models/OxCoder-9B.Q4_K_M.gguf)
+  --mmproj PATH           Path to multimodal vision projector (default: auto-detect)
+  --no-mmproj             Disable multimodal vision projector
   -c, --context, --ctx-slot N  Context per slot (default: 65536 for 4 slots, 32768 for 8 slots)
   --slots N               Number of parallel agent slots (default: 4; use 8 for large agent swarms)
   --thinking              Enable reasoning mode (default; uses temp 1.0, top_p 0.95, reasoning tags)
@@ -87,6 +92,14 @@ while [[ $# -gt 0 ]]; do
         -m|--model)
             MODEL_PATH="$2"
             shift 2
+            ;;
+        --mmproj)
+            MMPROJ_PATH="$2"
+            shift 2
+            ;;
+        --no-mmproj)
+            ENABLE_MMPROJ=0
+            shift
             ;;
         --thinking)
             ENABLE_THINKING=1
@@ -262,9 +275,35 @@ else
     REASONING_ARGS=("--reasoning-format" "none")
 fi
 
+# 7. Vision Projector (Multimodal) Configuration
+MMPROJ_ARGS=()
+if [[ "${ENABLE_MMPROJ}" -eq 1 ]]; then
+    if [[ -z "${MMPROJ_PATH}" ]]; then
+        if [[ -f "${DEFAULT_MMPROJ}" ]]; then
+            MMPROJ_PATH="${DEFAULT_MMPROJ}"
+        else
+            DETECTED_MMPROJ=($(find "${SCRIPT_DIR}/models" -maxdepth 1 -iname "*oxcoder*mmproj*.gguf" 2>/dev/null || true))
+            if [[ ${#DETECTED_MMPROJ[@]} -gt 0 && -f "${DETECTED_MMPROJ[0]}" ]]; then
+                MMPROJ_PATH="${DETECTED_MMPROJ[0]}"
+            fi
+        fi
+    fi
+
+    if [[ -n "${MMPROJ_PATH}" && -f "${MMPROJ_PATH}" ]]; then
+        MMPROJ_ARGS=("--mmproj" "${MMPROJ_PATH}")
+        MMPROJ_STATUS="Active ($(basename "${MMPROJ_PATH}"))"
+    else
+        MMPROJ_STATUS="Disabled (no projector found; run ./scripts/download-oxcoder-9b.sh mmproj)"
+    fi
+else
+    MMPROJ_ARGS=("--no-mmproj")
+    MMPROJ_STATUS="Disabled (--no-mmproj)"
+fi
+
 GPU_LAYERS="${CUSTOM_NGL:-99}"
 
 echo -e "${BOLD}Model:${NC}               ${CYAN}${MODEL_PATH}${NC}"
+echo -e "${BOLD}Vision Projector:${NC}    ${GREEN}${MMPROJ_STATUS}${NC}"
 echo -e "${BOLD}API Model Alias:${NC}     ${GREEN}${ALIAS}${NC}"
 echo -e "${BOLD}Parallel Slots:${NC}      ${GREEN}${SLOTS} slots${NC}"
 echo -e "${BOLD}Context per Slot:${NC}    ${GREEN}${CTX_PER_SLOT} tokens ($(( CTX_PER_SLOT / 1024 ))k tokens)${NC}"
@@ -308,4 +347,5 @@ exec "${SERVER_BIN}" \
     "${CTX_SHIFT_ARGS[@]}" \
     "${JINJA_ARGS[@]}" \
     "${REASONING_ARGS[@]}" \
-    "${SPEC_ARGS[@]}"
+    "${SPEC_ARGS[@]}" \
+    "${MMPROJ_ARGS[@]}"
