@@ -244,7 +244,7 @@ if [[ "${ENABLE_MMPROJ}" -eq 1 ]]; then
     fi
 
     if [[ -n "${MMPROJ_PATH}" && -f "${MMPROJ_PATH}" ]]; then
-        MMPROJ_ARGS=("--mmproj" "${MMPROJ_PATH}")
+        MMPROJ_ARGS=("--mmproj" "${MMPROJ_PATH}" "--image-min-tokens" "1024")
         MMPROJ_STATUS="Active ($(basename "${MMPROJ_PATH}"))"
     else
         MMPROJ_STATUS="Disabled (no projector found; run ./scripts/download-qwen3.8-gsq.sh mmproj)"
@@ -294,8 +294,12 @@ if [[ -f "${MODEL_PATH}" ]]; then
     MODEL_SIZE_BYTES=$(stat -c%s "${MODEL_PATH}" 2>/dev/null || echo 0)
 fi
 
-# Under 11.5 GB fits 100% in 16GB VRAM even with 262k context in q4_0 KV
-if [[ "${MODEL_SIZE_BYTES}" -gt 0 && "${MODEL_SIZE_BYTES}" -lt 11500000000 ]]; then
+# Determine safe GPU layer offload
+# For deep contexts (>128k up to 262k), 48 layers offload to GPU and 16 layers run on CPU RAM
+# to keep model + mmproj + massive 262k KV cache within 16GB VRAM (14.89 GB total)
+if [[ "${CONTEXT}" -gt 131072 ]]; then
+    DEFAULT_GPU_LAYERS=48
+elif [[ "${MODEL_SIZE_BYTES}" -gt 0 && "${MODEL_SIZE_BYTES}" -lt 11500000000 ]]; then
     DEFAULT_GPU_LAYERS=99
 else
     DEFAULT_GPU_LAYERS=50
