@@ -264,7 +264,7 @@ if [[ "${ENABLE_MMPROJ}" -eq 1 ]]; then
     fi
 
     if [[ -n "${MMPROJ_PATH}" && -f "${MMPROJ_PATH}" ]]; then
-        MMPROJ_ARGS=("--mmproj" "${MMPROJ_PATH}")
+        MMPROJ_ARGS=("--mmproj" "${MMPROJ_PATH}" "--image-min-tokens" "1024")
         MMPROJ_STATUS="Active ($(basename "${MMPROJ_PATH}"))"
     else
         MMPROJ_STATUS="Disabled (no projector found; run ./scripts/download-qwen3.8-gsq.sh mmproj)"
@@ -306,23 +306,7 @@ if [[ "${ENABLE_SPEC}" -eq 1 ]]; then
     fi
 fi
 
-# 5. GPU Layers Allocation (Smart memory budgeting for 16GB VRAM)
-MODEL_SIZE_BYTES=0
-if [[ -f "${MODEL_PATH}" ]]; then
-    MODEL_SIZE_BYTES=$(stat -c%s "${MODEL_PATH}" 2>/dev/null || echo 0)
-fi
-
-# Models under 11.5 GB (IQ2_XS, IQ2_S, IQ3_XXS) fit 100% in 16GB VRAM alongside mmproj
-if [[ "${MODEL_SIZE_BYTES}" -gt 0 && "${MODEL_SIZE_BYTES}" -lt 11500000000 ]]; then
-    DEFAULT_GPU_LAYERS=99
-else
-    # Heavy models (>=12GB like IQ3_S) need layer offload adjustment to prevent HIP OOM
-    DEFAULT_GPU_LAYERS=56
-fi
-
-GPU_LAYERS="${CUSTOM_NGL:-${DEFAULT_GPU_LAYERS}}"
-
-# 6. Context calculation per slot
+# 5. Context calculation per slot
 if [[ -n "${CUSTOM_CTX}" ]]; then
     CTX_PER_SLOT="${CUSTOM_CTX}"
 elif [[ "${SLOTS}" -le 2 ]]; then
@@ -334,6 +318,23 @@ else
 fi
 
 TOTAL_CTX=$(( SLOTS * CTX_PER_SLOT ))
+
+# 6. GPU Layers Allocation (Smart memory budgeting for 16GB VRAM)
+MODEL_SIZE_BYTES=0
+if [[ -f "${MODEL_PATH}" ]]; then
+    MODEL_SIZE_BYTES=$(stat -c%s "${MODEL_PATH}" 2>/dev/null || echo 0)
+fi
+
+# For total context > 128k, offload 48 layers to keep model + mmproj + KV within 16GB VRAM
+if [[ "${TOTAL_CTX}" -gt 131072 ]]; then
+    DEFAULT_GPU_LAYERS=48
+elif [[ "${MODEL_SIZE_BYTES}" -gt 0 && "${MODEL_SIZE_BYTES}" -lt 11500000000 ]]; then
+    DEFAULT_GPU_LAYERS=99
+else
+    DEFAULT_GPU_LAYERS=56
+fi
+
+GPU_LAYERS="${CUSTOM_NGL:-${DEFAULT_GPU_LAYERS}}"
 
 # 7. Context Shift
 CTX_SHIFT_ARGS=()
