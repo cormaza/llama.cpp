@@ -337,8 +337,9 @@ echo -e "${BOLD}API Model Alias:${NC}     ${GREEN}${ALIAS}${NC}"
 echo -e "${BOLD}Context Window:${NC}      ${GREEN}${CONTEXT} tokens ($(( CONTEXT / 1024 ))k tokens)${NC}"
 echo -e "${BOLD}Parallel Slots:${NC}      ${GREEN}1 slot (Dedicated deep ingestion)${NC}"
 echo -e "${BOLD}KV Cache Precision:${NC}  ${GREEN}${KV_QUANT} (-ctk ${KV_QUANT} -ctv ${KV_QUANT})${NC}"
-echo -e "${BOLD}GPU Offload:${NC}         ${GREEN}-ngl ${GPU_LAYERS} on AMD Radeon RX 9060 XT (-fa auto)${NC}"
-echo -e "${BOLD}Batching:${NC}            ${GREEN}Continuous (-cb) | Chunked Prefill (-ub 512, -b 2048)${NC}"
+echo -e "${BOLD}GPU Offload:${NC}         ${GREEN}-ngl ${GPU_LAYERS} on AMD Radeon RX 9060 XT (-fa on)${NC}"
+echo -e "${BOLD}Batching:${NC}            ${GREEN}Continuous (-cb) | Chunked Prefill (-ub 1024, -b 2048)${NC}"
+echo -e "${BOLD}CPU Affinity:${NC}        ${GREEN}Pinned to 8 P-cores (--cpu-range 0-7, -t ${THREADS})${NC}"
 echo -e "${BOLD}Speculative Dec:${NC}     ${GREEN}${SPEC_STATUS}${NC}"
 echo -e "${BOLD}Thinking Mode:${NC}       ${GREEN}${THINKING_STATUS}${NC}"
 echo -e "${BOLD}Chat Template:${NC}       ${GREEN}Froggeric Qwen-Fixed v22.5 (--jinja enabled)${NC}"
@@ -360,13 +361,14 @@ exec "${SERVER_BIN}" \
     -c "${CONTEXT}" \
     -np 1 \
     -b 2048 \
-    -ub 512 \
+    -ub 1024 \
     -cb \
     -ctk "${KV_QUANT}" \
     -ctv "${KV_QUANT}" \
     -ngl "${GPU_LAYERS}" \
-    -fa auto \
+    -fa on \
     -t "${THREADS}" \
+    --cpu-range 0-7 \
     --temp "${TEMPERATURE}" \
     --top-p "${TOP_P}" \
     --top-k "${TOP_K}" \

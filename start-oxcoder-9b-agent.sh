@@ -29,6 +29,7 @@ HOST="0.0.0.0"
 PORT=8080
 SLOTS=4
 CUSTOM_CTX=""
+CUSTOM_CTX_SLOT=""
 CUSTOM_TEMP=""
 CUSTOM_TOP_P=""
 CUSTOM_TOP_K=""
@@ -37,7 +38,7 @@ ENABLE_THINKING=1
 KV_QUANT="q4_0"
 CUSTOM_NGL=""
 ALIAS="oxcoder-9b"
-THREADS=6
+THREADS=8
 ENABLE_CTX_SHIFT=1
 ENABLE_SPEC=1
 
@@ -57,7 +58,8 @@ Options:
   -m, --model PATH        Path to GGUF model (default: ./models/OxCoder-9B.Q4_K_M.gguf)
   --mmproj PATH           Path to multimodal vision projector (default: auto-detect)
   --no-mmproj             Disable multimodal vision projector
-  -c, --context, --ctx-slot N  Context per slot (default: 65536 for 4 slots, 32768 for 8 slots)
+  -c, --context N         Total context size pool (default: 262144 / 256k total)
+  --ctx-slot N            Explicit context per slot override (default: auto-split)
   --slots N               Number of parallel agent slots (default: 4; use 8 for large agent swarms)
   --thinking              Enable reasoning mode (default; uses temp 1.0, top_p 0.95, reasoning tags)
   --no-thinking           Disable reasoning mode (direct agent mode; uses temp 0.6, top_p 0.80)
@@ -65,7 +67,7 @@ Options:
   --top-p N               Top-p sampling override (default: 0.95 with thinking, 0.80 without)
   --top-k N               Top-k sampling override (default: 40)
   --presence-penalty N    Presence penalty override (default: 0.0 with thinking, 1.5 without)
-  -t, --threads N         Number of CPU threads (default: 6)
+  -t, --threads N         Number of CPU threads (default: 8)
   --context-shift         Enable context shifting for continuous agent operation (default: enabled)
   --no-context-shift      Disable context shifting
   --no-spec               Disable N-Gram speculative decoding
@@ -125,8 +127,12 @@ while [[ $# -gt 0 ]]; do
             CUSTOM_PRESENCE="$2"
             shift 2
             ;;
-        -c|--context|--ctx-slot)
+        -c|--context)
             CUSTOM_CTX="$2"
+            shift 2
+            ;;
+        --ctx-slot)
+            CUSTOM_CTX_SLOT="$2"
             shift 2
             ;;
         -t|--threads)
@@ -221,29 +227,72 @@ if [[ -z "${MODEL_PATH}" ]]; then
     fi
 fi
 
-# 3. Context calculation per slot (Qwen 3.5 hybrid KV cache is 4x smaller than standard transformers)
-if [[ -n "${CUSTOM_CTX}" ]]; then
-    CTX_PER_SLOT="${CUSTOM_CTX}"
-elif [[ "${SLOTS}" -le 2 ]]; then
-    CTX_PER_SLOT=131072 # 128k context per slot for <=2 slots
-elif [[ "${SLOTS}" -le 4 ]]; then
-    CTX_PER_SLOT=65536  # 64k context per slot for 4 slots (256k total pool)
+# 3. Vision Projector (Multimodal) Configuration
+MMPROJ_ARGS=()
+MMPROJ_ACTIVE=0
+if [[ "${ENABLE_MMPROJ}" -eq 1 ]]; then
+    if [[ -z "${MMPROJ_PATH}" ]]; then
+        if [[ -f "${DEFAULT_MMPROJ}" ]]; then
+            MMPROJ_PATH="${DEFAULT_MMPROJ}"
+        else
+            DETECTED_MMPROJ=($(find "${SCRIPT_DIR}/models" -maxdepth 1 -iname "*oxcoder*mmproj*.gguf" 2>/dev/null || true))
+            if [[ ${#DETECTED_MMPROJ[@]} -gt 0 && -f "${DETECTED_MMPROJ[0]}" ]]; then
+                MMPROJ_PATH="${DETECTED_MMPROJ[0]}"
+            fi
+        fi
+    fi
+
+    if [[ -n "${MMPROJ_PATH}" && -f "${MMPROJ_PATH}" ]]; then
+        MMPROJ_ARGS=("--mmproj" "${MMPROJ_PATH}" "--image-min-tokens" "1024")
+        MMPROJ_STATUS="Active ($(basename "${MMPROJ_PATH}"))"
+        MMPROJ_ACTIVE=1
+    else
+        MMPROJ_STATUS="Disabled (no projector found; run ./scripts/download-oxcoder-9b.sh mmproj)"
+    fi
 else
-    CTX_PER_SLOT=32768  # 32k context per slot for 8 slots (256k total pool)
+    MMPROJ_ARGS=("--no-mmproj")
+    MMPROJ_STATUS="Disabled (--no-mmproj)"
 fi
 
-TOTAL_CTX=$(( SLOTS * CTX_PER_SLOT ))
+# 4. Context calculation and VRAM safety bounds
+# OxCoder-9B native max context is 262144. In 16GB VRAM, 262k total pool is the safe maximum.
+MAX_SAFE_CTX=262144
+if [[ -n "${CUSTOM_CTX_SLOT}" ]]; then
+    CTX_PER_SLOT="${CUSTOM_CTX_SLOT}"
+    TOTAL_CTX=$(( SLOTS * CTX_PER_SLOT ))
+elif [[ -n "${CUSTOM_CTX}" ]]; then
+    if [[ "${CUSTOM_CTX}" -ge 131072 && "${SLOTS}" -gt 1 ]]; then
+        TOTAL_CTX="${CUSTOM_CTX}"
+        CTX_PER_SLOT=$(( TOTAL_CTX / SLOTS ))
+    else
+        CTX_PER_SLOT="${CUSTOM_CTX}"
+        TOTAL_CTX=$(( SLOTS * CTX_PER_SLOT ))
+    fi
+else
+    TOTAL_CTX="${MAX_SAFE_CTX}"
+    CTX_PER_SLOT=$(( TOTAL_CTX / SLOTS ))
+fi
 
-# 4. Context shift
+if [[ "${TOTAL_CTX}" -gt "${MAX_SAFE_CTX}" ]]; then
+    echo -e "${YELLOW}[WARN] Total context (${TOTAL_CTX}) exceeds the 262k safe capacity for 16GB VRAM.${NC}"
+    echo -e "${YELLOW}[WARN] Capping total context to ${MAX_SAFE_CTX} ($(( MAX_SAFE_CTX / SLOTS )) per slot) to avoid Out-Of-Memory crashes.${NC}"
+    TOTAL_CTX="${MAX_SAFE_CTX}"
+    CTX_PER_SLOT=$(( TOTAL_CTX / SLOTS ))
+fi
+
+# 5. Context Shift Configuration
+# llama-server strictly disables ctx_shift when mmproj is loaded (multimodal chunks cannot be shifted)
 CTX_SHIFT_ARGS=()
-if [[ "${ENABLE_CTX_SHIFT}" -eq 1 ]]; then
+if [[ "${MMPROJ_ACTIVE}" -eq 1 ]]; then
+    CTX_SHIFT_STATUS="Disabled (Multimodal active; pass --no-mmproj for infinite context shifting)"
+elif [[ "${ENABLE_CTX_SHIFT}" -eq 1 ]]; then
     CTX_SHIFT_ARGS+=("--context-shift")
     CTX_SHIFT_STATUS="Active (Infinite generation / continuous agent operation)"
 else
     CTX_SHIFT_STATUS="Disabled"
 fi
 
-# 5. Speculative Decoding (N-Gram Prompt Lookup)
+# 6. Speculative Decoding (N-Gram Prompt Lookup)
 SPEC_STATUS="Disabled"
 SPEC_ARGS=()
 if [[ "${ENABLE_SPEC}" -eq 1 ]]; then
@@ -251,7 +300,7 @@ if [[ "${ENABLE_SPEC}" -eq 1 ]]; then
     SPEC_ARGS+=("--spec-type" "ngram-simple" "--spec-ngram-simple-size-m" "48")
 fi
 
-# 6. Template & Sampling Configuration
+# 7. Template & Sampling Configuration
 JINJA_ARGS=("--jinja")
 if [[ "${ENABLE_THINKING}" -eq 1 ]]; then
     TEMPERATURE="${CUSTOM_TEMP:-1.0}"
@@ -275,31 +324,6 @@ else
     REASONING_ARGS=("--reasoning-format" "none")
 fi
 
-# 7. Vision Projector (Multimodal) Configuration
-MMPROJ_ARGS=()
-if [[ "${ENABLE_MMPROJ}" -eq 1 ]]; then
-    if [[ -z "${MMPROJ_PATH}" ]]; then
-        if [[ -f "${DEFAULT_MMPROJ}" ]]; then
-            MMPROJ_PATH="${DEFAULT_MMPROJ}"
-        else
-            DETECTED_MMPROJ=($(find "${SCRIPT_DIR}/models" -maxdepth 1 -iname "*oxcoder*mmproj*.gguf" 2>/dev/null || true))
-            if [[ ${#DETECTED_MMPROJ[@]} -gt 0 && -f "${DETECTED_MMPROJ[0]}" ]]; then
-                MMPROJ_PATH="${DETECTED_MMPROJ[0]}"
-            fi
-        fi
-    fi
-
-    if [[ -n "${MMPROJ_PATH}" && -f "${MMPROJ_PATH}" ]]; then
-        MMPROJ_ARGS=("--mmproj" "${MMPROJ_PATH}")
-        MMPROJ_STATUS="Active ($(basename "${MMPROJ_PATH}"))"
-    else
-        MMPROJ_STATUS="Disabled (no projector found; run ./scripts/download-oxcoder-9b.sh mmproj)"
-    fi
-else
-    MMPROJ_ARGS=("--no-mmproj")
-    MMPROJ_STATUS="Disabled (--no-mmproj)"
-fi
-
 GPU_LAYERS="${CUSTOM_NGL:-99}"
 
 echo -e "${BOLD}Model:${NC}               ${CYAN}${MODEL_PATH}${NC}"
@@ -310,8 +334,9 @@ echo -e "${BOLD}Context per Slot:${NC}    ${GREEN}${CTX_PER_SLOT} tokens ($(( CT
 echo -e "${BOLD}Total Context Pool:${NC}  ${GREEN}${TOTAL_CTX} tokens ($(( TOTAL_CTX / 1024 ))k tokens)${NC}"
 echo -e "${BOLD}Context Shift:${NC}       ${GREEN}${CTX_SHIFT_STATUS}${NC}"
 echo -e "${BOLD}KV Cache Precision:${NC}  ${GREEN}${KV_QUANT} (-ctk ${KV_QUANT} -ctv ${KV_QUANT})${NC}"
-echo -e "${BOLD}GPU Offload:${NC}         ${GREEN}All 32 layers offloaded to GPU (-ngl ${GPU_LAYERS} -fa auto)${NC}"
-echo -e "${BOLD}Batching:${NC}            ${GREEN}Continuous (-cb) | Chunked Prefill (-ub 512, -b 2048)${NC}"
+echo -e "${BOLD}GPU Offload:${NC}         ${GREEN}All 32 layers offloaded to GPU (-ngl ${GPU_LAYERS} -fa on)${NC}"
+echo -e "${BOLD}Batching:${NC}            ${GREEN}Continuous (-cb) | Chunked Prefill (-ub 1024, -b 2048)${NC}"
+echo -e "${BOLD}CPU Affinity:${NC}        ${GREEN}Pinned to 8 P-cores (--cpu-range 0-7, -t ${THREADS})${NC}"
 echo -e "${BOLD}Speculative Dec:${NC}     ${GREEN}${SPEC_STATUS}${NC}"
 echo -e "${BOLD}Thinking Mode:${NC}       ${GREEN}${THINKING_STATUS}${NC}"
 echo -e "${BOLD}Chat Template:${NC}       ${GREEN}Froggeric v21.3 Qwen-Fixed (--jinja enabled)${NC}"
@@ -333,13 +358,14 @@ exec "${SERVER_BIN}" \
     -c "${TOTAL_CTX}" \
     -np "${SLOTS}" \
     -b 2048 \
-    -ub 512 \
+    -ub 1024 \
     -cb \
     -ctk "${KV_QUANT}" \
     -ctv "${KV_QUANT}" \
     -ngl "${GPU_LAYERS}" \
-    -fa auto \
+    -fa on \
     -t "${THREADS}" \
+    --cpu-range 0-7 \
     --temp "${TEMPERATURE}" \
     --top-p "${TOP_P}" \
     --top-k "${TOP_K}" \
