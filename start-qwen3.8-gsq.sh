@@ -36,6 +36,7 @@ HOST="0.0.0.0"
 PORT=8080
 SLOTS=1
 CUSTOM_CTX=""
+CUSTOM_CTX_SLOT=""
 CUSTOM_TEMP=""
 CUSTOM_TOP_P=""
 CUSTOM_TOP_K=""
@@ -70,7 +71,8 @@ Options:
   --draft-n N             MTP speculative draft depth (default: 2)
   --mtp PATH              Path to external MTP draft model (if using non-mtp base)
   --no-mtp                Disable MTP speculative decoding (falls back to N-Gram lookup)
-  -c, --context N         Context per slot (default: 131072 for <=2 slots, 65536 for 4 slots)
+  -c, --context N         Total context size pool (default: 131072 for <=2 slots, 262144 for 4 slots)
+  --ctx-slot N            Explicit context per slot override
   --slots N               Number of parallel slots (default: 1; use 2, 4 for multi-agent)
   --thinking              Enable reasoning mode (default; temp 1.0, top_p 0.95, top_k 20)
   --no-thinking           Disable reasoning mode (direct response; temp 0.7, top_p 0.80, presence 1.5)
@@ -127,8 +129,12 @@ while [[ $# -gt 0 ]]; do
             ENABLE_MTP=0
             shift
             ;;
-        -c|--context|--ctx-slot)
+        -c|--context)
             CUSTOM_CTX="$2"
+            shift 2
+            ;;
+        --ctx-slot)
+            CUSTOM_CTX_SLOT="$2"
             shift 2
             ;;
         --slots)
@@ -251,6 +257,7 @@ fi
 
 # 3. Vision Projector (Multimodal) Configuration
 MMPROJ_ARGS=()
+MMPROJ_ACTIVE=0
 if [[ "${ENABLE_MMPROJ}" -eq 1 ]]; then
     if [[ -z "${MMPROJ_PATH}" ]]; then
         if [[ -f "${DEFAULT_MMPROJ}" ]]; then
@@ -266,6 +273,7 @@ if [[ "${ENABLE_MMPROJ}" -eq 1 ]]; then
     if [[ -n "${MMPROJ_PATH}" && -f "${MMPROJ_PATH}" ]]; then
         MMPROJ_ARGS=("--mmproj" "${MMPROJ_PATH}" "--image-min-tokens" "1024")
         MMPROJ_STATUS="Active ($(basename "${MMPROJ_PATH}"))"
+        MMPROJ_ACTIVE=1
     else
         MMPROJ_STATUS="Disabled (no projector found; run ./scripts/download-qwen3.8-gsq.sh mmproj)"
     fi
@@ -306,18 +314,36 @@ if [[ "${ENABLE_SPEC}" -eq 1 ]]; then
     fi
 fi
 
-# 5. Context calculation per slot
-if [[ -n "${CUSTOM_CTX}" ]]; then
-    CTX_PER_SLOT="${CUSTOM_CTX}"
+# 5. Context calculation per slot and VRAM safety bounds
+MAX_SAFE_CTX=262144
+if [[ -n "${CUSTOM_CTX_SLOT}" ]]; then
+    CTX_PER_SLOT="${CUSTOM_CTX_SLOT}"
+    TOTAL_CTX=$(( SLOTS * CTX_PER_SLOT ))
+elif [[ -n "${CUSTOM_CTX}" ]]; then
+    if [[ "${CUSTOM_CTX}" -ge 131072 && "${SLOTS}" -gt 1 ]]; then
+        TOTAL_CTX="${CUSTOM_CTX}"
+        CTX_PER_SLOT=$(( TOTAL_CTX / SLOTS ))
+    else
+        CTX_PER_SLOT="${CUSTOM_CTX}"
+        TOTAL_CTX=$(( SLOTS * CTX_PER_SLOT ))
+    fi
 elif [[ "${SLOTS}" -le 2 ]]; then
     CTX_PER_SLOT=131072 # 128k context per slot for 1-2 slots
+    TOTAL_CTX=$(( SLOTS * CTX_PER_SLOT ))
 elif [[ "${SLOTS}" -le 4 ]]; then
     CTX_PER_SLOT=65536  # 64k context per slot for 3-4 slots
+    TOTAL_CTX=$(( SLOTS * CTX_PER_SLOT ))
 else
     CTX_PER_SLOT=32768  # 32k context per slot for 8 slots
+    TOTAL_CTX=$(( SLOTS * CTX_PER_SLOT ))
 fi
 
-TOTAL_CTX=$(( SLOTS * CTX_PER_SLOT ))
+if [[ "${TOTAL_CTX}" -gt "${MAX_SAFE_CTX}" ]]; then
+    echo -e "${YELLOW}[WARN] Total context (${TOTAL_CTX}) exceeds the 262k safe capacity for 16GB VRAM.${NC}"
+    echo -e "${YELLOW}[WARN] Capping total context to ${MAX_SAFE_CTX} ($(( MAX_SAFE_CTX / SLOTS )) per slot) to avoid Out-Of-Memory crashes.${NC}"
+    TOTAL_CTX="${MAX_SAFE_CTX}"
+    CTX_PER_SLOT=$(( TOTAL_CTX / SLOTS ))
+fi
 
 # 6. GPU Layers Allocation (Smart memory budgeting for 16GB VRAM)
 MODEL_SIZE_BYTES=0
@@ -337,8 +363,11 @@ fi
 GPU_LAYERS="${CUSTOM_NGL:-${DEFAULT_GPU_LAYERS}}"
 
 # 7. Context Shift
+# llama-server strictly disables ctx_shift when mmproj is loaded (multimodal chunks cannot be shifted)
 CTX_SHIFT_ARGS=()
-if [[ "${ENABLE_CTX_SHIFT}" -eq 1 ]]; then
+if [[ "${MMPROJ_ACTIVE}" -eq 1 ]]; then
+    CTX_SHIFT_STATUS="Disabled (Multimodal active; pass --no-mmproj for infinite context shifting)"
+elif [[ "${ENABLE_CTX_SHIFT}" -eq 1 ]]; then
     CTX_SHIFT_ARGS+=("--context-shift")
     CTX_SHIFT_STATUS="Active (Infinite continuous operation)"
 else
@@ -377,8 +406,9 @@ echo -e "${BOLD}Context per Slot:${NC}    ${GREEN}${CTX_PER_SLOT} tokens ($(( CT
 echo -e "${BOLD}Total Context Pool:${NC}  ${GREEN}${TOTAL_CTX} tokens ($(( TOTAL_CTX / 1024 ))k tokens)${NC}"
 echo -e "${BOLD}Context Shift:${NC}       ${GREEN}${CTX_SHIFT_STATUS}${NC}"
 echo -e "${BOLD}KV Cache Precision:${NC}  ${GREEN}${KV_QUANT} (-ctk ${KV_QUANT} -ctv ${KV_QUANT})${NC}"
-echo -e "${BOLD}GPU Offload:${NC}         ${GREEN}-ngl ${GPU_LAYERS} on AMD Radeon RX 9060 XT (-fa auto)${NC}"
-echo -e "${BOLD}Batching:${NC}            ${GREEN}Continuous (-cb) | Chunked Prefill (-ub 512, -b 2048)${NC}"
+echo -e "${BOLD}GPU Offload:${NC}         ${GREEN}-ngl ${GPU_LAYERS} on AMD Radeon RX 9060 XT (-fa on)${NC}"
+echo -e "${BOLD}Batching:${NC}            ${GREEN}Continuous (-cb) | Chunked Prefill (-ub 1024, -b 2048)${NC}"
+echo -e "${BOLD}CPU Affinity:${NC}        ${GREEN}Pinned to 8 P-cores (--cpu-range 0-7, -t ${THREADS})${NC}"
 echo -e "${BOLD}Speculative Dec:${NC}     ${GREEN}${SPEC_STATUS}${NC}"
 echo -e "${BOLD}Thinking Mode:${NC}       ${GREEN}${THINKING_STATUS}${NC}"
 echo -e "${BOLD}Chat Template:${NC}       ${GREEN}Froggeric Qwen-Fixed v22.5 (--jinja enabled)${NC}"
@@ -400,13 +430,14 @@ exec "${SERVER_BIN}" \
     -c "${TOTAL_CTX}" \
     -np "${SLOTS}" \
     -b 2048 \
-    -ub 512 \
+    -ub 1024 \
     -cb \
     -ctk "${KV_QUANT}" \
     -ctv "${KV_QUANT}" \
     -ngl "${GPU_LAYERS}" \
-    -fa auto \
+    -fa on \
     -t "${THREADS}" \
+    --cpu-range 0-7 \
     --temp "${TEMPERATURE}" \
     --top-p "${TOP_P}" \
     --top-k "${TOP_K}" \
