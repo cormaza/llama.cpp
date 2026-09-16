@@ -46,7 +46,7 @@ CUSTOM_TOP_K=""
 CUSTOM_PRESENCE=""
 KV_QUANT="q4_0"
 CUSTOM_NGL=""
-ALIAS="bonsai-27b,ternary-bonsai,qwen-27b,gpt-4o"
+ALIAS="bonsai-27b"
 THREADS=8
 
 # Detect Primary LAN IP
