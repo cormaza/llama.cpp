@@ -779,14 +779,29 @@ static struct gguf_context * gguf_init_from_reader(const struct gguf_reader & gr
         for (size_t i = 0; i < ctx->info.size(); ++i) {
             const gguf_tensor_info & ti = ctx->info[i];
             if (ti.offset != ctx->size) {
+                if (has_q2_0 && ti.offset == size_if_legacy_q2) {
+                    GGML_LOG_WARN("%s: legacy Prism Q2_0 layout detected, remapping to PQ2_0 (group size 128)\n", __func__);
+                    for (size_t j = 0; j < ctx->info.size(); ++j) {
+                        gguf_tensor_info & tj = ctx->info[j];
+                        if (tj.t.type == GGML_TYPE_Q2_0) {
+                            tj.t.type = GGML_TYPE_PQ2_0;
+                            const size_t  type_size = ggml_type_size(tj.t.type);
+                            const int64_t blck_size = ggml_blck_size(tj.t.type);
+                            tj.t.nb[0] = type_size;
+                            tj.t.nb[1] = tj.t.nb[0]*(tj.t.ne[0]/blck_size);
+                            for (int k = 2; k < GGML_MAX_DIMS; ++k) {
+                                tj.t.nb[k] = tj.t.nb[k - 1]*tj.t.ne[k - 1];
+                            }
+                        }
+                    }
+                    ctx->size = 0;
+                    size_if_legacy_q2 = 0;
+                    has_q2_0 = false;
+                    i = (size_t)-1;
+                    continue;
+                }
                 GGML_LOG_ERROR("%s: tensor '%s' has offset %" PRIu64 ", expected %zu\n",
                     __func__, ti.t.name, ti.offset, ctx->size);
-                if (has_q2_0 && ti.offset == size_if_legacy_q2) {
-                    GGML_LOG_ERROR("%s: this file matches the legacy Prism Q2_0 layout (group size 128 stored as ggml type id 42), "
-                        "but this build reads Q2_0 as the official group-64 format\n", __func__);
-                    GGML_LOG_ERROR("%s: you are probably using the wrong GGUF: use the PQ2_0 version of this model (ggml type id 142) "
-                        "or download the group-64 Q2_0 file\n", __func__);
-                }
                 GGML_LOG_ERROR("%s: failed to read tensor data\n", __func__);
                 gguf_free(ctx);
                 return nullptr;

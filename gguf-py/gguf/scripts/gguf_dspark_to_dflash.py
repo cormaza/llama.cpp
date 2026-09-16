@@ -101,6 +101,10 @@ class Reader:
         if t == ARR:
             et = struct.unpack("<I", self.f.read(4))[0]
             n = struct.unpack("<Q", self.f.read(8))[0]
+            if et in _FIXED:
+                fmt = "<" + _FIXED[et][1] * n
+                sz = struct.calcsize(fmt)
+                return (et, list(struct.unpack(fmt, self.f.read(sz))))
             return (et, [self._val(et) for _ in range(n)])
         fmt = _FIXED[t]
         return struct.unpack(fmt, self.f.read(struct.calcsize(fmt)))[0]
@@ -116,10 +120,11 @@ def enc_val(t, v):
         return enc_str(v)
     if t == ARR:
         et, items = v
-        out = struct.pack("<I", et) + struct.pack("<Q", len(items))
-        for it in items:
-            out += enc_val(et, it)
-        return out
+        hdr = struct.pack("<I", et) + struct.pack("<Q", len(items))
+        if et in _FIXED:
+            fmt = "<" + _FIXED[et][1] * len(items)
+            return hdr + struct.pack(fmt, *items)
+        return hdr + b"".join(enc_val(et, it) for it in items)
     return struct.pack(_FIXED[t], v)
 
 
@@ -205,15 +210,18 @@ def main():
         new_off = (new_off + t_size[nm] + src.alignment - 1) // src.alignment * src.alignment
 
     # header
-    hdr = GGUF_MAGIC + struct.pack("<I", src.version)
-    hdr += struct.pack("<Q", len(new_tensors)) + struct.pack("<Q", len(new_kv))
+    hdr_parts = [
+        GGUF_MAGIC + struct.pack("<I", src.version),
+        struct.pack("<Q", len(new_tensors)) + struct.pack("<Q", len(new_kv))
+    ]
     for k, t, v in new_kv:
-        hdr += enc_str(k) + struct.pack("<I", t) + enc_val(t, v)
+        hdr_parts.append(enc_str(k) + struct.pack("<I", t) + enc_val(t, v))
     for nm, dims, ty, noff, _ooff, _sz in new_tensors:
-        hdr += enc_str(nm) + struct.pack("<I", len(dims))
+        hdr_parts.append(enc_str(nm) + struct.pack("<I", len(dims)))
         for d in dims:
-            hdr += struct.pack("<Q", d)
-        hdr += struct.pack("<I", ty) + struct.pack("<Q", noff)
+            hdr_parts.append(struct.pack("<Q", d))
+        hdr_parts.append(struct.pack("<I", ty) + struct.pack("<Q", noff))
+    hdr = b"".join(hdr_parts)
 
     pad = -len(hdr) % src.alignment
     data_bytes = sum(sz for *_, sz in new_tensors)

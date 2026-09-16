@@ -24,6 +24,7 @@ ALT_MODEL_G64="${SCRIPT_DIR}/models/Ternary-Bonsai-27B-Q2_g64.gguf"
 ALT_MODEL_Q2="${SCRIPT_DIR}/models/Ternary-Bonsai-27B-Q2_0.gguf"
 
 DEFAULT_DSPARK="${SCRIPT_DIR}/models/Ternary-Bonsai-27B-dspark-Q4_1.gguf"
+DEFAULT_DFLASH="${SCRIPT_DIR}/models/Ternary-Bonsai-27B-dflash-Q4_1.gguf"
 DEFAULT_MMPROJ="${SCRIPT_DIR}/models/Ternary-Bonsai-27B-mmproj-Q8_0.gguf"
 
 MODEL_PATH=""
@@ -252,24 +253,28 @@ else
     MMPROJ_STATUS="Disabled (--no-mmproj)"
 fi
 
-# 4. DSpark Speculative Decoding Configuration
+# 4. Speculative Decoding Configuration (DSpark / DFlash)
 DSPARK_ARGS=()
 DSPARK_STATUS="Disabled"
 if [[ "${ENABLE_DSPARK}" -eq 1 ]]; then
     if [[ -z "${DSPARK_PATH}" ]]; then
-        if [[ -f "${DEFAULT_DSPARK}" ]]; then
-            DSPARK_PATH="${DEFAULT_DSPARK}"
+        if [[ -f "${DEFAULT_DFLASH}" ]]; then
+            DSPARK_PATH="${DEFAULT_DFLASH}"
+        elif [[ -f "${DEFAULT_DSPARK}" ]]; then
+            echo -e "${YELLOW}Converting legacy DSpark drafter to native dflash format...${NC}"
+            python3 "${SCRIPT_DIR}/gguf-py/gguf/scripts/gguf_dspark_to_dflash.py" --drop-shared-tensors "${DEFAULT_DSPARK}" "${MODEL_PATH}" "${DEFAULT_DFLASH}"
+            DSPARK_PATH="${DEFAULT_DFLASH}"
         else
-            DETECTED_DSPARK=($(find "${SCRIPT_DIR}/models" -maxdepth 1 -iname "*bonsai*dspark*.gguf" 2>/dev/null || true))
-            if [[ ${#DETECTED_DSPARK[@]} -gt 0 && -f "${DETECTED_DSPARK[0]}" ]]; then
-                DSPARK_PATH="${DETECTED_DSPARK[0]}"
+            DETECTED_DFLASH=($(find "${SCRIPT_DIR}/models" -maxdepth 1 -iname "*bonsai*dflash*.gguf" 2>/dev/null || true))
+            if [[ ${#DETECTED_DFLASH[@]} -gt 0 && -f "${DETECTED_DFLASH[0]}" ]]; then
+                DSPARK_PATH="${DETECTED_DFLASH[0]}"
             fi
         fi
     fi
 
     if [[ -n "${DSPARK_PATH}" && -f "${DSPARK_PATH}" ]]; then
         DSPARK_ARGS=("-md" "${DSPARK_PATH}" "-ngld" "99")
-        DSPARK_STATUS="Active ($(basename "${DSPARK_PATH}"), 1.34x speedup)"
+        DSPARK_STATUS="Active ($(basename "${DSPARK_PATH}"), up to 1.7x speedup)"
     else
         DSPARK_STATUS="Disabled (no drafter found; run ./scripts/download-bonsai-27b.sh dspark)"
     fi
