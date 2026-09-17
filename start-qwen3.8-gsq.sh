@@ -48,6 +48,22 @@ ALIAS="qwen-3.8-27b,qwen-27b,qwen,gpt-4o"
 THREADS=8
 ENABLE_CTX_SHIFT=1
 ENABLE_SPEC=1
+ENABLE_KV_UNIFIED=0
+
+# Helper function to parse human-readable token notation (e.g., 32k, 64k, 128k, 256k)
+parse_tokens() {
+    local val="${1,,}"
+    val="${val//[[:space:]]/}"
+    if [[ "${val}" =~ ^([0-9]+)k$ ]]; then
+        echo $(( ${BASH_REMATCH[1]} * 1024 ))
+    elif [[ "${val}" =~ ^([0-9]+)m$ ]]; then
+        echo $(( ${BASH_REMATCH[1]} * 1024 * 1024 ))
+    elif [[ "${val}" =~ ^[0-9]+$ ]]; then
+        echo "${val}"
+    else
+        echo "${val}"
+    fi
+}
 
 # Detect Primary LAN IP for remote access
 LOCAL_IP="$(ip -4 route get 1.1.1.1 2>/dev/null | awk '{print $7}' | head -n1 || echo "127.0.0.1")"
@@ -64,38 +80,41 @@ optimized for AMD Radeon RX 9060 XT (16GB VRAM), featuring:
   - 100% GPU Offload with quantized KV cache (q4_0) & Flash Attention
 
 Options:
-  -m, --model PATH        Path to GGUF model (default: auto-detect Qwen3.8 GSQ-RCO)
-  -a, --alias NAMES       Model alias for API clients (default: ${ALIAS})
-  --mmproj PATH           Path to multimodal vision projector (default: auto-detect)
-  --no-mmproj             Disable multimodal vision projector
-  --draft-n N             MTP speculative draft depth (default: 2)
-  --mtp PATH              Path to external MTP draft model (if using non-mtp base)
-  --no-mtp                Disable MTP speculative decoding (falls back to N-Gram lookup)
-  -c, --context N         Total context size pool (default: 131072 for <=2 slots, 262144 for 4 slots)
-  --ctx-slot N            Explicit context per slot override
-  --slots N               Number of parallel slots (default: 1; use 2, 4 for multi-agent)
-  --thinking              Enable reasoning mode (default; temp 1.0, top_p 0.95, top_k 20)
-  --no-thinking           Disable reasoning mode (direct response; temp 0.7, top_p 0.80, presence 1.5)
-  --temp N                Sampling temperature override
-  --top-p N               Top-p sampling override
-  --top-k N               Top-k sampling override
-  --presence-penalty N    Presence penalty override
-  -p, --port PORT         HTTP server port (default: 8080)
-  --host HOST             Host address to bind (default: 0.0.0.0)
-  --kv-quant TYPE         KV Cache precision: q4_0 (default, fast) | q8_0 | f16
-  --ngl N                 GPU layers offloaded (default: 99 for 100% GPU offload)
-  --no-spec               Disable all speculative decoding
-  --context-shift         Enable continuous context shifting (default: enabled)
-  --no-context-shift      Disable context shifting
-  -t, --threads N         Number of CPU threads (default: 8)
-  -h, --help              Show this help message
+  -m, --model PATH              Path to GGUF model (default: auto-detect Qwen3.8 GSQ-RCO)
+  -a, --alias NAMES             Model alias for API clients (default: ${ALIAS})
+  --mmproj PATH                 Path to multimodal vision projector (default: auto-detect)
+  --no-mmproj                   Disable multimodal vision projector
+  --draft-n N                   MTP speculative draft depth (default: 2)
+  --mtp PATH                    Path to external MTP draft model (if using non-mtp base)
+  --no-mtp                      Disable MTP speculative decoding (falls back to N-Gram lookup)
+  -c, --context, --total-ctx N  Total context pool across all slots (supports 64k, 128k, 256k)
+  --ctx-slot N                  Explicit context per slot (e.g. 32k, 64k; total = slots * ctx_slot)
+  --slots, -np N                Number of parallel slots (default: 1; use 2, 4 for multi-agent)
+  -kvu, --kv-unified            Enable dynamic unified KV cache pool shared across all slots
+  --thinking                    Enable reasoning mode (default; temp 1.0, top_p 0.95, top_k 20)
+  --no-thinking                 Disable reasoning mode (direct response; temp 0.7, top_p 0.80, presence 1.5)
+  --temp N                      Sampling temperature override
+  --top-p N                     Top-p sampling override
+  --top-k N                     Top-k sampling override
+  --presence-penalty N          Presence penalty override
+  -p, --port PORT               HTTP server port (default: 8080)
+  --host HOST                   Host address to bind (default: 0.0.0.0)
+  --kv-quant TYPE               KV Cache precision: q4_0 (default, fast) | q8_0 | f16
+  --ngl N                       GPU layers offloaded (default: 99 for 100% GPU offload)
+  --no-spec                     Disable all speculative decoding
+  --context-shift               Enable continuous context shifting (default: enabled)
+  --no-context-shift            Disable context shifting
+  -t, --threads N               Number of CPU threads (default: 8)
+  -h, --help                    Show this help message
 
 Examples:
-  ./start-qwen3.8-gsq.sh                     # 1 slot x 128k context, MTP + Vision enabled
-  ./start-qwen3.8-gsq.sh --no-thinking       # Fast direct coding without <think> tags
-  ./start-qwen3.8-gsq.sh --slots 2           # 2 parallel agent slots x 64k
-  ./start-qwen3.8-gsq.sh -c 262144           # 256k native deep context
-  ./start-qwen3.8-gsq.sh --no-mmproj         # Pure text mode (saves ~0.9 GB VRAM)
+  ./start-qwen3.8-gsq.sh                            # 1 slot x 128k context, MTP + Vision enabled
+  ./start-qwen3.8-gsq.sh --no-thinking              # Fast direct coding without <think> tags
+  ./start-qwen3.8-gsq.sh --slots 2                  # 2 parallel agent slots x 128k (256k pool)
+  ./start-qwen3.8-gsq.sh --slots 4 --ctx-slot 64k   # 4 slots x 64k (256k total pool)
+  ./start-qwen3.8-gsq.sh -c 262144                  # 256k native deep context
+  ./start-qwen3.8-gsq.sh -kvu -c 256k --slots 4     # Dynamic shared unified KV pool
+  ./start-qwen3.8-gsq.sh --no-mmproj                # Pure text mode (saves ~0.9 GB VRAM)
 EOF
 }
 
@@ -129,17 +148,21 @@ while [[ $# -gt 0 ]]; do
             ENABLE_MTP=0
             shift
             ;;
-        -c|--context)
+        -c|--context|--ctx|--total-ctx|--total-context)
             CUSTOM_CTX="$2"
             shift 2
             ;;
-        --ctx-slot)
+        --ctx-slot|--slot-ctx|--context-slot)
             CUSTOM_CTX_SLOT="$2"
             shift 2
             ;;
-        --slots)
+        --slots|-np|--parallel)
             SLOTS="$2"
             shift 2
+            ;;
+        -kvu|--kv-unified)
+            ENABLE_KV_UNIFIED=1
+            shift
             ;;
         --thinking)
             ENABLE_THINKING=1
@@ -316,33 +339,65 @@ fi
 
 # 5. Context calculation per slot and VRAM safety bounds
 MAX_SAFE_CTX=262144
+if [[ -n "${CUSTOM_CTX}" ]]; then
+    CUSTOM_CTX="$(parse_tokens "${CUSTOM_CTX}")"
+fi
 if [[ -n "${CUSTOM_CTX_SLOT}" ]]; then
+    CUSTOM_CTX_SLOT="$(parse_tokens "${CUSTOM_CTX_SLOT}")"
+fi
+
+if [[ -n "${CUSTOM_CTX_SLOT}" && -n "${CUSTOM_CTX}" ]]; then
+    CTX_PER_SLOT="${CUSTOM_CTX_SLOT}"
+    TOTAL_CTX="${CUSTOM_CTX}"
+elif [[ -n "${CUSTOM_CTX_SLOT}" ]]; then
     CTX_PER_SLOT="${CUSTOM_CTX_SLOT}"
     TOTAL_CTX=$(( SLOTS * CTX_PER_SLOT ))
 elif [[ -n "${CUSTOM_CTX}" ]]; then
-    if [[ "${CUSTOM_CTX}" -ge 131072 && "${SLOTS}" -gt 1 ]]; then
-        TOTAL_CTX="${CUSTOM_CTX}"
-        CTX_PER_SLOT=$(( TOTAL_CTX / SLOTS ))
-    else
-        CTX_PER_SLOT="${CUSTOM_CTX}"
-        TOTAL_CTX=$(( SLOTS * CTX_PER_SLOT ))
-    fi
+    TOTAL_CTX="${CUSTOM_CTX}"
+    CTX_PER_SLOT=$(( TOTAL_CTX / SLOTS ))
 elif [[ "${SLOTS}" -le 2 ]]; then
     CTX_PER_SLOT=131072 # 128k context per slot for 1-2 slots
     TOTAL_CTX=$(( SLOTS * CTX_PER_SLOT ))
 elif [[ "${SLOTS}" -le 4 ]]; then
-    CTX_PER_SLOT=65536  # 64k context per slot for 3-4 slots
-    TOTAL_CTX=$(( SLOTS * CTX_PER_SLOT ))
+    TOTAL_CTX=262144
+    CTX_PER_SLOT=$(( TOTAL_CTX / SLOTS ))
 else
-    CTX_PER_SLOT=32768  # 32k context per slot for 8 slots
+    TOTAL_CTX=262144
+    CTX_PER_SLOT=$(( TOTAL_CTX / SLOTS ))
+fi
+
+# Ensure minimum viable context per slot
+if [[ "${CTX_PER_SLOT}" -lt 1024 ]]; then
+    CTX_PER_SLOT=1024
     TOTAL_CTX=$(( SLOTS * CTX_PER_SLOT ))
 fi
 
 if [[ "${TOTAL_CTX}" -gt "${MAX_SAFE_CTX}" ]]; then
-    echo -e "${YELLOW}[WARN] Total context (${TOTAL_CTX}) exceeds the 262k safe capacity for 16GB VRAM.${NC}"
-    echo -e "${YELLOW}[WARN] Capping total context to ${MAX_SAFE_CTX} ($(( MAX_SAFE_CTX / SLOTS )) per slot) to avoid Out-Of-Memory crashes.${NC}"
-    TOTAL_CTX="${MAX_SAFE_CTX}"
-    CTX_PER_SLOT=$(( TOTAL_CTX / SLOTS ))
+    echo -e "${YELLOW}[WARN] Total context (${TOTAL_CTX} tokens) exceeds the 262k safe capacity for 16GB VRAM.${NC}"
+    echo -e "${YELLOW}[WARN] Ensure you have sufficient RAM or adjust offload layers if running near limits.${NC}"
+fi
+
+# Dynamic batch sizes: clamp batch size to total context if context is small
+BATCH_SIZE=2048
+UBATCH_SIZE=1024
+if [[ "${TOTAL_CTX}" -lt "${BATCH_SIZE}" ]]; then
+    BATCH_SIZE="${TOTAL_CTX}"
+fi
+if [[ "${BATCH_SIZE}" -lt "${UBATCH_SIZE}" ]]; then
+    UBATCH_SIZE="${BATCH_SIZE}"
+fi
+
+# Unified KV Cache Configuration
+KV_UNIFIED_ARGS=()
+KV_UNIFIED_STATUS="Dedicated per slot"
+if [[ "${ENABLE_KV_UNIFIED}" -eq 1 ]]; then
+    KV_UNIFIED_ARGS+=("-kvu")
+    if [[ -n "${CUSTOM_CTX_SLOT}" ]]; then
+        KV_UNIFIED_ARGS+=("--kv-unified-per-slot" "${CTX_PER_SLOT}")
+        KV_UNIFIED_STATUS="Unified shared pool (max ${CTX_PER_SLOT} per slot)"
+    else
+        KV_UNIFIED_STATUS="Unified shared pool (dynamic)"
+    fi
 fi
 
 # 6. GPU Layers Allocation (Smart memory budgeting for 16GB VRAM)
@@ -405,9 +460,10 @@ echo -e "${BOLD}Parallel Slots:${NC}      ${GREEN}${SLOTS} slots${NC}"
 echo -e "${BOLD}Context per Slot:${NC}    ${GREEN}${CTX_PER_SLOT} tokens ($(( CTX_PER_SLOT / 1024 ))k tokens)${NC}"
 echo -e "${BOLD}Total Context Pool:${NC}  ${GREEN}${TOTAL_CTX} tokens ($(( TOTAL_CTX / 1024 ))k tokens)${NC}"
 echo -e "${BOLD}Context Shift:${NC}       ${GREEN}${CTX_SHIFT_STATUS}${NC}"
+echo -e "${BOLD}KV Cache Allocation:${NC} ${GREEN}${KV_UNIFIED_STATUS}${NC}"
 echo -e "${BOLD}KV Cache Precision:${NC}  ${GREEN}${KV_QUANT} (-ctk ${KV_QUANT} -ctv ${KV_QUANT})${NC}"
 echo -e "${BOLD}GPU Offload:${NC}         ${GREEN}-ngl ${GPU_LAYERS} on AMD Radeon RX 9060 XT (-fa on)${NC}"
-echo -e "${BOLD}Batching:${NC}            ${GREEN}Continuous (-cb) | Chunked Prefill (-ub 1024, -b 2048)${NC}"
+echo -e "${BOLD}Batching:${NC}            ${GREEN}Continuous (-cb) | Chunked Prefill (-ub ${UBATCH_SIZE}, -b ${BATCH_SIZE})${NC}"
 echo -e "${BOLD}CPU Affinity:${NC}        ${GREEN}Pinned to 8 P-cores (--cpu-range 0-7, -t ${THREADS})${NC}"
 echo -e "${BOLD}Speculative Dec:${NC}     ${GREEN}${SPEC_STATUS}${NC}"
 echo -e "${BOLD}Thinking Mode:${NC}       ${GREEN}${THINKING_STATUS}${NC}"
@@ -429,9 +485,10 @@ exec "${SERVER_BIN}" \
     --port "${PORT}" \
     -c "${TOTAL_CTX}" \
     -np "${SLOTS}" \
-    -b 2048 \
-    -ub 1024 \
+    -b "${BATCH_SIZE}" \
+    -ub "${UBATCH_SIZE}" \
     -cb \
+    "${KV_UNIFIED_ARGS[@]}" \
     -ctk "${KV_QUANT}" \
     -ctv "${KV_QUANT}" \
     -ngl "${GPU_LAYERS}" \
