@@ -47,6 +47,21 @@ ALIAS="qwen-3.8-27b-gsq"
 THREADS=8
 ENABLE_SPEC=1
 
+# Helper function to parse human-readable token notation (e.g., 32k, 64k, 128k, 256k)
+parse_tokens() {
+    local val="${1,,}"
+    val="${val//[[:space:]]/}"
+    if [[ "${val}" =~ ^([0-9]+)k$ ]]; then
+        echo $(( ${BASH_REMATCH[1]} * 1024 ))
+    elif [[ "${val}" =~ ^([0-9]+)m$ ]]; then
+        echo $(( ${BASH_REMATCH[1]} * 1024 * 1024 ))
+    elif [[ "${val}" =~ ^[0-9]+$ ]]; then
+        echo "${val}"
+    else
+        echo "${val}"
+    fi
+}
+
 # Detect Primary LAN IP for remote access
 LOCAL_IP="$(ip -4 route get 1.1.1.1 2>/dev/null | awk '{print $7}' | head -n1 || echo "127.0.0.1")"
 
@@ -67,7 +82,7 @@ Options:
   --draft-n N             MTP speculative draft depth (default: 2)
   --mtp PATH              Path to external MTP draft model (if using non-mtp base)
   --no-mtp                Disable MTP speculative decoding (falls back to N-Gram lookup)
-  -c, --context N         Context size (default: 262144, full native context)
+  -c, --context N         Context size (default: 262144; supports 64k, 128k, 256k)
   --thinking              Enable reasoning mode (default; temp 1.0, top_p 0.95, top_k 20)
   --no-thinking           Disable reasoning mode (direct response; temp 0.7, top_p 0.80, presence 1.5)
   --temp N                Sampling temperature override
@@ -84,7 +99,7 @@ Options:
 
 Examples:
   ./start-qwen3.8-gsq-max-context.sh               # 262k native context with MTP & Vision
-  ./start-qwen3.8-gsq-max-context.sh -c 131072     # 128k context
+  ./start-qwen3.8-gsq-max-context.sh -c 128k       # 128k context
   ./start-qwen3.8-gsq-max-context.sh --no-thinking # Direct deep repo ingestion without reasoning
 EOF
 }
@@ -287,7 +302,21 @@ if [[ "${ENABLE_SPEC}" -eq 1 ]]; then
 fi
 
 # 5. Context & GPU Layers Allocation
-CONTEXT="${CUSTOM_CTX:-262144}"
+if [[ -n "${CUSTOM_CTX}" ]]; then
+    CONTEXT="$(parse_tokens "${CUSTOM_CTX}")"
+else
+    CONTEXT=262144
+fi
+
+# Dynamic batch sizes: clamp batch size to total context if context is small
+BATCH_SIZE=2048
+UBATCH_SIZE=1024
+if [[ "${CONTEXT}" -lt "${BATCH_SIZE}" ]]; then
+    BATCH_SIZE="${CONTEXT}"
+fi
+if [[ "${BATCH_SIZE}" -lt "${UBATCH_SIZE}" ]]; then
+    UBATCH_SIZE="${BATCH_SIZE}"
+fi
 
 MODEL_SIZE_BYTES=0
 if [[ -f "${MODEL_PATH}" ]]; then
@@ -338,7 +367,7 @@ echo -e "${BOLD}Context Window:${NC}      ${GREEN}${CONTEXT} tokens ($(( CONTEXT
 echo -e "${BOLD}Parallel Slots:${NC}      ${GREEN}1 slot (Dedicated deep ingestion)${NC}"
 echo -e "${BOLD}KV Cache Precision:${NC}  ${GREEN}${KV_QUANT} (-ctk ${KV_QUANT} -ctv ${KV_QUANT})${NC}"
 echo -e "${BOLD}GPU Offload:${NC}         ${GREEN}-ngl ${GPU_LAYERS} on AMD Radeon RX 9060 XT (-fa on)${NC}"
-echo -e "${BOLD}Batching:${NC}            ${GREEN}Continuous (-cb) | Chunked Prefill (-ub 1024, -b 2048)${NC}"
+echo -e "${BOLD}Batching:${NC}            ${GREEN}Continuous (-cb) | Chunked Prefill (-ub ${UBATCH_SIZE}, -b ${BATCH_SIZE})${NC}"
 echo -e "${BOLD}CPU Affinity:${NC}        ${GREEN}Pinned to 8 P-cores (--cpu-range 0-7, -t ${THREADS})${NC}"
 echo -e "${BOLD}Speculative Dec:${NC}     ${GREEN}${SPEC_STATUS}${NC}"
 echo -e "${BOLD}Thinking Mode:${NC}       ${GREEN}${THINKING_STATUS}${NC}"
@@ -360,8 +389,8 @@ exec "${SERVER_BIN}" \
     --port "${PORT}" \
     -c "${CONTEXT}" \
     -np 1 \
-    -b 2048 \
-    -ub 1024 \
+    -b "${BATCH_SIZE}" \
+    -ub "${UBATCH_SIZE}" \
     -cb \
     -ctk "${KV_QUANT}" \
     -ctv "${KV_QUANT}" \

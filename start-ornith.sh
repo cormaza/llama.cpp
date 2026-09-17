@@ -5,13 +5,13 @@
 
 set -euo pipefail
 
-RED='[0;31m'
-GREEN='[0;32m'
-YELLOW='[1;33m'
-BLUE='[0;34m'
-CYAN='[0;36m'
-BOLD='[1m'
-NC='[0m'
+RED='\033[0;31m'
+GREEN='\033[0;32m'
+YELLOW='\033[1;33m'
+BLUE='\033[0;34m'
+CYAN='\033[0;36m'
+BOLD='\033[1m'
+NC='\033[0m'
 
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 BIN_DIR="${SCRIPT_DIR}/build-amd/bin"
@@ -25,6 +25,7 @@ HOST="0.0.0.0"
 PORT=8080
 SLOTS=1
 CUSTOM_CTX=""
+CUSTOM_CTX_SLOT=""
 CUSTOM_TEMP=""
 CUSTOM_TOP_P=""
 CUSTOM_TOP_K=""
@@ -33,7 +34,24 @@ ENABLE_THINKING=1
 KV_QUANT="q4_0"
 ENABLE_MTP=1
 DRAFT_N_MAX=3     # Optimal draft depth for Ornith MTP
+ENABLE_CTX_SHIFT=1
+ENABLE_KV_UNIFIED=0
 ALIAS="ornith-1.5-9b"
+
+# Helper function to parse human-readable token notation (e.g., 32k, 64k, 128k, 256k)
+parse_tokens() {
+    local val="${1,,}"
+    val="${val//[[:space:]]/}"
+    if [[ "${val}" =~ ^([0-9]+)k$ ]]; then
+        echo $(( ${BASH_REMATCH[1]} * 1024 ))
+    elif [[ "${val}" =~ ^([0-9]+)m$ ]]; then
+        echo $(( ${BASH_REMATCH[1]} * 1024 * 1024 ))
+    elif [[ "${val}" =~ ^[0-9]+$ ]]; then
+        echo "${val}"
+    else
+        echo "${val}"
+    fi
+}
 
 # Detect Primary LAN IP for remote access
 LOCAL_IP="$(ip -4 route get 1.1.1.1 2>/dev/null | awk '{print $7}' | head -n1 || echo "127.0.0.1")"
@@ -47,29 +65,33 @@ with Froggeric Fixed Chat Templates, 100% GPU offload on AMD Radeon RX 9060 XT (
 built-in MTP speculative decoding, and official Qwen 3.5 coding sampling parameters.
 
 Options:
-  -m, --model PATH        Path to Ornith GGUF model
-  -a, --alias NAMES       Model alias for API clients (default: ornith-1.5-9b,ornith,gpt-4o,qwen)
-  -c, --context, --ctx-slot N  Context per slot (default: 131072 for <=2 slots, 65536 for 4 slots, 32768 for 8 slots)
-  --slots N               Number of parallel agent slots (default: 1; use 2, 4, 8 for multi-agent)
-  --thinking              Enable reasoning mode (default; uses temp 0.6, top_p 0.95, top_k 20)
-  --no-thinking           Disable reasoning mode (direct agent output; uses temp 0.7, top_p 0.80, top_k 20, presence 1.5)
-  --temp N                Sampling temperature override (default: 0.6 with thinking, 0.7 without thinking)
-  --top-p N               Top-p sampling override (default: 0.95 with thinking, 0.80 without thinking)
-  --top-k N               Top-k sampling override (default: 20)
-  --presence-penalty N    Presence penalty override (default: 0.0 with thinking, 1.5 without thinking)
-  -p, --port PORT         HTTP server port (default: 8080)
-  --kv-quant TYPE         KV Cache precision: q4_0 (default, fast) | q8_0 | f16
-  --draft-n N             MTP draft depth (default: 3, optimal for throughput)
-  --no-mtp                Disable MTP speculative decoding
-  -h, --help              Show this help message
+  -m, --model PATH              Path to Ornith GGUF model
+  -a, --alias NAMES             Model alias for API clients (default: ornith-1.5-9b,ornith,gpt-4o,qwen)
+  -c, --context, --total-ctx N  Total context pool across all slots (supports 64k, 128k, 256k)
+  --ctx-slot N                  Explicit context per slot (e.g. 32k, 64k; total = slots * ctx_slot)
+  --slots, -np N                Number of parallel agent slots (default: 1; use 2, 4, 8 for multi-agent)
+  -kvu, --kv-unified            Enable dynamic unified KV cache pool shared across all slots
+  --thinking                    Enable reasoning mode (default; uses temp 0.6, top_p 0.95, top_k 20)
+  --no-thinking                 Disable reasoning mode (direct agent output; uses temp 0.7, top_p 0.80, top_k 20, presence 1.5)
+  --temp N                      Sampling temperature override (default: 0.6 with thinking, 0.7 without thinking)
+  --top-p N                     Top-p sampling override (default: 0.95 with thinking, 0.80 without thinking)
+  --top-k N                     Top-k sampling override (default: 20)
+  --presence-penalty N          Presence penalty override (default: 0.0 with thinking, 1.5 without thinking)
+  -p, --port PORT               HTTP server port (default: 8080)
+  --kv-quant TYPE               KV Cache precision: q4_0 (default, fast) | q8_0 | f16
+  --draft-n N                   MTP draft depth (default: 3, optimal for throughput)
+  --no-mtp                      Disable MTP speculative decoding
+  --context-shift               Enable context shifting for continuous agent operation (default: enabled)
+  --no-context-shift            Disable context shifting
+  -h, --help                    Show this help message
 
 Examples:
-  ./start-ornith.sh               # Default thinking mode (temp 0.6, top_p 0.95, deepseek reasoning)
-  ./start-ornith.sh --no-thinking # Direct fast coding (temp 0.7, top_p 0.80, presence 1.5)
-  ./start-ornith.sh --slots 4
-  ./start-ornith.sh --slots 8 -c 32768
-  ./start-ornith.sh --temp 0.7
-  ./start-ornith.sh -c 262144
+  ./start-ornith.sh                            # Default thinking mode (temp 0.6, top_p 0.95, deepseek reasoning)
+  ./start-ornith.sh --no-thinking              # Direct fast coding (temp 0.7, top_p 0.80, presence 1.5)
+  ./start-ornith.sh --slots 4                  # 4 parallel agent slots
+  ./start-ornith.sh --slots 4 --ctx-slot 64k   # 4 slots x 64k context (256k pool)
+  ./start-ornith.sh -c 262144                  # 256k total context pool
+  ./start-ornith.sh -kvu -c 256k --slots 4     # Shared dynamic unified KV pool
   ./start-ornith.sh -m ./models/Ornith-1.5-9B-MTP-Q6_K.gguf
 EOF
 }
@@ -84,13 +106,21 @@ while [[ $# -gt 0 ]]; do
             ALIAS="$2"
             shift 2
             ;;
-        -c|--context|--ctx-slot)
+        -c|--context|--ctx|--total-ctx|--total-context)
             CUSTOM_CTX="$2"
             shift 2
             ;;
-        --slots)
+        --ctx-slot|--slot-ctx|--context-slot)
+            CUSTOM_CTX_SLOT="$2"
+            shift 2
+            ;;
+        --slots|-np|--parallel)
             SLOTS="$2"
             shift 2
+            ;;
+        -kvu|--kv-unified)
+            ENABLE_KV_UNIFIED=1
+            shift
             ;;
         --thinking)
             ENABLE_THINKING=1
@@ -132,6 +162,14 @@ while [[ $# -gt 0 ]]; do
             ENABLE_MTP=0
             shift
             ;;
+        --context-shift)
+            ENABLE_CTX_SHIFT=1
+            shift
+            ;;
+        --no-context-shift)
+            ENABLE_CTX_SHIFT=0
+            shift
+            ;;
         -h|--help)
             show_help
             exit 0
@@ -166,8 +204,7 @@ if [[ -z "${MODEL_PATH}" ]]; then
     else
         FOUND_MODELS=($(find "${SCRIPT_DIR}/models" -maxdepth 1 -iname "*ornith*.gguf" ! -iname "mmproj*" ! -iname "*head*" 2>/dev/null || true))
         if [[ ${#FOUND_MODELS[@]} -gt 0 ]]; then
-            echo -e "
-Found existing Ornith models in ./models/:"
+            echo -e "\nFound existing Ornith models in ./models/:"
             select opt in "${FOUND_MODELS[@]}" "Descargar Ornith 1.5 9B" "Salir"; do
                 if [[ -n "${opt}" && -f "${opt}" ]]; then
                     MODEL_PATH="${opt}"
@@ -189,22 +226,74 @@ fi
 
 # 3. Context calculation per slot & MTP Setup
 if [[ -n "${CUSTOM_CTX}" ]]; then
-    CTX_PER_SLOT="${CUSTOM_CTX}"
-elif [[ "${SLOTS}" -le 2 ]]; then
-    CTX_PER_SLOT=131072 # 128k context per slot for 1-2 slots
-elif [[ "${SLOTS}" -le 4 ]]; then
-    CTX_PER_SLOT=65536  # 64k context per slot for 3-4 slots
-else
-    CTX_PER_SLOT=32768  # 32k context per slot for 8 slots (fits in 16GB VRAM)
+    CUSTOM_CTX="$(parse_tokens "${CUSTOM_CTX}")"
+fi
+if [[ -n "${CUSTOM_CTX_SLOT}" ]]; then
+    CUSTOM_CTX_SLOT="$(parse_tokens "${CUSTOM_CTX_SLOT}")"
 fi
 
-TOTAL_CTX=$(( SLOTS * CTX_PER_SLOT ))
+if [[ -n "${CUSTOM_CTX_SLOT}" && -n "${CUSTOM_CTX}" ]]; then
+    CTX_PER_SLOT="${CUSTOM_CTX_SLOT}"
+    TOTAL_CTX="${CUSTOM_CTX}"
+elif [[ -n "${CUSTOM_CTX_SLOT}" ]]; then
+    CTX_PER_SLOT="${CUSTOM_CTX_SLOT}"
+    TOTAL_CTX=$(( SLOTS * CTX_PER_SLOT ))
+elif [[ -n "${CUSTOM_CTX}" ]]; then
+    TOTAL_CTX="${CUSTOM_CTX}"
+    CTX_PER_SLOT=$(( TOTAL_CTX / SLOTS ))
+elif [[ "${SLOTS}" -le 2 ]]; then
+    CTX_PER_SLOT=131072 # 128k context per slot for 1-2 slots
+    TOTAL_CTX=$(( SLOTS * CTX_PER_SLOT ))
+elif [[ "${SLOTS}" -le 4 ]]; then
+    TOTAL_CTX=262144
+    CTX_PER_SLOT=$(( TOTAL_CTX / SLOTS ))
+else
+    TOTAL_CTX=262144
+    CTX_PER_SLOT=$(( TOTAL_CTX / SLOTS ))
+fi
+
+# Ensure minimum viable context per slot
+if [[ "${CTX_PER_SLOT}" -lt 1024 ]]; then
+    CTX_PER_SLOT=1024
+    TOTAL_CTX=$(( SLOTS * CTX_PER_SLOT ))
+fi
+
+# Dynamic batch sizes: clamp batch size to total context if context is small
+BATCH_SIZE=2048
+UBATCH_SIZE=512
+if [[ "${TOTAL_CTX}" -lt "${BATCH_SIZE}" ]]; then
+    BATCH_SIZE="${TOTAL_CTX}"
+fi
+if [[ "${BATCH_SIZE}" -lt "${UBATCH_SIZE}" ]]; then
+    UBATCH_SIZE="${BATCH_SIZE}"
+fi
+
+# Unified KV Cache Configuration
+KV_UNIFIED_ARGS=()
+KV_UNIFIED_STATUS="Dedicated per slot"
+if [[ "${ENABLE_KV_UNIFIED}" -eq 1 ]]; then
+    KV_UNIFIED_ARGS+=("-kvu")
+    if [[ -n "${CUSTOM_CTX_SLOT}" ]]; then
+        KV_UNIFIED_ARGS+=("--kv-unified-per-slot" "${CTX_PER_SLOT}")
+        KV_UNIFIED_STATUS="Unified shared pool (max ${CTX_PER_SLOT} per slot)"
+    else
+        KV_UNIFIED_STATUS="Unified shared pool (dynamic)"
+    fi
+fi
 
 MTP_STATUS="Disabled"
 MTP_ARGS=()
 if [[ "${ENABLE_MTP}" -eq 1 ]]; then
     MTP_STATUS="Active (Built-in MTP Head, draft_n_max=${DRAFT_N_MAX})"
     MTP_ARGS+=("--spec-type" "draft-mtp" "--spec-draft-n-max" "${DRAFT_N_MAX}")
+fi
+
+CTX_SHIFT_ARGS=()
+if [[ "${ENABLE_CTX_SHIFT}" -eq 1 ]]; then
+    CTX_SHIFT_ARGS+=("--context-shift")
+    CTX_SHIFT_STATUS="Active (Infinite generation / continuous agent support)"
+else
+    CTX_SHIFT_STATUS="Disabled"
 fi
 
 # 4. Template & Sampling Configuration (Froggeric Qwen 3.5 Recommendations)
@@ -236,8 +325,11 @@ echo -e "${BOLD}API Model Alias:${NC}     ${GREEN}${ALIAS}${NC}"
 echo -e "${BOLD}Parallel Slots:${NC}      ${GREEN}${SLOTS} slots${NC}"
 echo -e "${BOLD}Context per Slot:${NC}    ${GREEN}${CTX_PER_SLOT} tokens ($(( CTX_PER_SLOT / 1024 ))k tokens)${NC}"
 echo -e "${BOLD}Total Context Pool:${NC}  ${GREEN}${TOTAL_CTX} tokens ($(( TOTAL_CTX / 1024 ))k tokens)${NC}"
+echo -e "${BOLD}Context Shift:${NC}       ${GREEN}${CTX_SHIFT_STATUS}${NC}"
+echo -e "${BOLD}KV Cache Allocation:${NC} ${GREEN}${KV_UNIFIED_STATUS}${NC}"
 echo -e "${BOLD}KV Cache Precision:${NC}  ${GREEN}${KV_QUANT}${NC}"
 echo -e "${BOLD}GPU Offload:${NC}         ${GREEN}100% on AMD Radeon RX 9060 XT (All 34 layers offloaded)${NC}"
+echo -e "${BOLD}Batching:${NC}            ${GREEN}Continuous (-cb) | Chunked Prefill (-ub ${UBATCH_SIZE}, -b ${BATCH_SIZE})${NC}"
 echo -e "${BOLD}Speculative Dec:${NC}     ${GREEN}${MTP_STATUS}${NC}"
 echo -e "${BOLD}Thinking Mode:${NC}       ${GREEN}${THINKING_STATUS}${NC}"
 echo -e "${BOLD}Chat Template:${NC}       ${GREEN}Froggeric Qwen-Fixed v22.5 (--jinja enabled)${NC}"
@@ -258,9 +350,11 @@ exec "${SERVER_BIN}" \
     --port "${PORT}" \
     -c "${TOTAL_CTX}" \
     -np "${SLOTS}" \
-    -b 2048 \
-    -ub 512 \
+    -b "${BATCH_SIZE}" \
+    -ub "${UBATCH_SIZE}" \
     -cb \
+    "${KV_UNIFIED_ARGS[@]}" \
+    "${CTX_SHIFT_ARGS[@]}" \
     -ctk "${KV_QUANT}" \
     -ctv "${KV_QUANT}" \
     -ngl 99 \
