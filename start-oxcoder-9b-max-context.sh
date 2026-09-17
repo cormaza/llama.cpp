@@ -40,6 +40,21 @@ ALIAS="oxcoder-9b"
 THREADS=8
 ENABLE_SPEC=1
 
+# Helper function to parse human-readable token notation (e.g., 32k, 64k, 128k, 256k)
+parse_tokens() {
+    local val="${1,,}"
+    val="${val//[[:space:]]/}"
+    if [[ "${val}" =~ ^([0-9]+)k$ ]]; then
+        echo $(( ${BASH_REMATCH[1]} * 1024 ))
+    elif [[ "${val}" =~ ^([0-9]+)m$ ]]; then
+        echo $(( ${BASH_REMATCH[1]} * 1024 * 1024 ))
+    elif [[ "${val}" =~ ^[0-9]+$ ]]; then
+        echo "${val}"
+    else
+        echo "${val}"
+    fi
+}
+
 # Detect Primary LAN IP for remote access
 LOCAL_IP="$(ip -4 route get 1.1.1.1 2>/dev/null | awk '{print $7}' | head -n1 || echo "127.0.0.1")"
 
@@ -205,8 +220,21 @@ if [[ -z "${MODEL_PATH}" ]]; then
 fi
 
 # 3. Context & GPU Offload (262k context occupies only ~2.5 GB in Qwen 3.5 hybrid KV cache!)
-CONTEXT="${CUSTOM_CTX:-262144}"
+if [[ -n "${CUSTOM_CTX}" ]]; then
+    CONTEXT="$(parse_tokens "${CUSTOM_CTX}")"
+else
+    CONTEXT=262144
+fi
 GPU_LAYERS="${CUSTOM_NGL:-99}"
+
+BATCH_SIZE=2048
+UBATCH_SIZE=1024
+if [[ "${CONTEXT}" -lt "${BATCH_SIZE}" ]]; then
+    BATCH_SIZE="${CONTEXT}"
+fi
+if [[ "${BATCH_SIZE}" -lt "${UBATCH_SIZE}" ]]; then
+    UBATCH_SIZE="${BATCH_SIZE}"
+fi
 
 # 4. Speculative Decoding (N-Gram Prompt Lookup)
 SPEC_STATUS="Disabled"
@@ -294,8 +322,8 @@ exec "${SERVER_BIN}" \
     --port "${PORT}" \
     -c "${CONTEXT}" \
     -np 1 \
-    -b 2048 \
-    -ub 1024 \
+    -b "${BATCH_SIZE}" \
+    -ub "${UBATCH_SIZE}" \
     -cb \
     -ctk "${KV_QUANT}" \
     -ctv "${KV_QUANT}" \

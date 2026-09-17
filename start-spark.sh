@@ -5,13 +5,13 @@
 
 set -euo pipefail
 
-RED='[0;31m'
-GREEN='[0;32m'
-YELLOW='[1;33m'
-BLUE='[0;34m'
-CYAN='[0;36m'
-BOLD='[1m'
-NC='[0m'
+RED='\033[0;31m'
+GREEN='\033[0;32m'
+YELLOW='\033[1;33m'
+BLUE='\033[0;34m'
+CYAN='\033[0;36m'
+BOLD='\033[1m'
+NC='\033[0m'
 
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 BIN_DIR="${SCRIPT_DIR}/build-amd/bin"
@@ -24,12 +24,29 @@ HOST="0.0.0.0"
 PORT=8080
 SLOTS=4
 CUSTOM_CTX=""
+CUSTOM_CTX_SLOT=""
 CUSTOM_TEMP=""
 TOP_P=0.95
 ALIAS="spark-x2.5-4b"
 THREADS=8
 ENABLE_CTX_SHIFT=1
 ENABLE_THINKING=1
+ENABLE_KV_UNIFIED=0
+
+# Helper function to parse human-readable token notation (e.g., 32k, 64k, 128k, 256k)
+parse_tokens() {
+    local val="${1,,}"
+    val="${val//[[:space:]]/}"
+    if [[ "${val}" =~ ^([0-9]+)k$ ]]; then
+        echo $(( ${BASH_REMATCH[1]} * 1024 ))
+    elif [[ "${val}" =~ ^([0-9]+)m$ ]]; then
+        echo $(( ${BASH_REMATCH[1]} * 1024 * 1024 ))
+    elif [[ "${val}" =~ ^[0-9]+$ ]]; then
+        echo "${val}"
+    else
+        echo "${val}"
+    fi
+}
 
 # Detect Primary LAN IP for remote access
 LOCAL_IP="$(ip -4 route get 1.1.1.1 2>/dev/null | awk '{print $7}' | head -n1 || echo "127.0.0.1")"
@@ -43,26 +60,30 @@ featuring native 1M hybrid attention, continuous parallel slots, chunked prefill
 and automatic context-shifting for agent tools (e.g. OpenCode, OMP).
 
 Options:
-  -a, --alias NAMES       Model alias for API clients (default: spark-x2.5-4b,spark-4b,spark,gpt-4o,qwen)
-  -m, --model PATH        Path to GGUF model (default: ./models/Spark-X2.5-4B-Q4_K_M.gguf)
-  -c, --context, --ctx-slot N  Context per slot (default: 163840 for 4 slots, 81920 for 8 slots)
-  --slots N               Number of parallel agent slots (default: 4; up to 8 slots supported)
-  --thinking              Enable <think> reasoning (default; uses temp 1.0 & top_p 0.95 for optimal reasoning)
-  --no-thinking           Disable <think> reasoning (direct agent output, defaults to temp 0.2 for coding)
-  --temp N                Override sampling temperature (default: 1.0 with thinking, 0.2 without thinking)
-  --top-p N               Nucleus sampling top_p (default: 0.95 per model card)
-  -t, --threads N         Number of CPU threads (default: 8)
-  -p, --port PORT         HTTP server port (default: 8080)
-  --host HOST             Host address to bind (default: 0.0.0.0)
-  --context-shift         Enable context shifting for continuous agent operations (default: enabled)
-  --no-context-shift      Disable context shifting
-  -h, --help              Show this help message
+  -a, --alias NAMES             Model alias for API clients (default: spark-x2.5-4b,spark-4b,spark,gpt-4o,qwen)
+  -m, --model PATH              Path to GGUF model (default: ./models/Spark-X2.5-4B-Q4_K_M.gguf)
+  -c, --context, --total-ctx N  Total context pool across all slots (supports 64k, 128k, 512k)
+  --ctx-slot N                  Explicit context per slot (e.g. 64k, 160k; total = slots * ctx_slot)
+  --slots, -np N                Number of parallel agent slots (default: 4; up to 8 slots supported)
+  -kvu, --kv-unified            Enable dynamic unified KV cache pool shared across all slots
+  --thinking                    Enable <think> reasoning (default; uses temp 1.0 & top_p 0.95 for optimal reasoning)
+  --no-thinking                 Disable <think> reasoning (direct agent output, defaults to temp 0.2 for coding)
+  --temp N                      Override sampling temperature (default: 1.0 with thinking, 0.2 without thinking)
+  --top-p N                     Nucleus sampling top_p (default: 0.95 per model card)
+  -t, --threads N               Number of CPU threads (default: 8)
+  -p, --port PORT               HTTP server port (default: 8080)
+  --host HOST                   Host address to bind (default: 0.0.0.0)
+  --context-shift               Enable context shifting for continuous agent operations (default: enabled)
+  --no-context-shift            Disable context shifting
+  -h, --help                    Show this help message
 
 Examples:
-  ./start-spark.sh                     # 4 slots x 160k context (640k total pool, thinking on @ temp 1.0)
-  ./start-spark.sh --slots 8           # 8 slots x 80k context (640k total pool, ~11.9GB VRAM safe)
-  ./start-spark.sh --no-thinking       # Direct fast responses (no <think> delay, temp 0.2 like Gemma)
-  ./start-spark.sh --slots 1 -c 524288 # 1 slot x 512k single-agent maximized context
+  ./start-spark.sh                            # 4 slots x 160k context (640k total pool, thinking on @ temp 1.0)
+  ./start-spark.sh --slots 8                  # 8 slots x 80k context (640k total pool, ~11.9GB VRAM safe)
+  ./start-spark.sh --slots 4 --ctx-slot 128k  # 4 slots x 128k context (512k pool)
+  ./start-spark.sh -kvu -c 512k --slots 4     # Shared dynamic unified KV pool
+  ./start-spark.sh --no-thinking              # Direct fast responses (no <think> delay, temp 0.2 like Gemma)
+  ./start-spark.sh --slots 1 -c 512k          # 1 slot x 512k single-agent maximized context
 EOF
 }
 
@@ -76,13 +97,21 @@ while [[ $# -gt 0 ]]; do
             MODEL_PATH="$2"
             shift 2
             ;;
-        -c|--context|--ctx-slot)
+        -c|--context|--ctx|--total-ctx|--total-context)
             CUSTOM_CTX="$2"
             shift 2
             ;;
-        --slots)
+        --ctx-slot|--slot-ctx|--context-slot)
+            CUSTOM_CTX_SLOT="$2"
+            shift 2
+            ;;
+        --slots|-np|--parallel)
             SLOTS="$2"
             shift 2
+            ;;
+        -kvu|--kv-unified)
+            ENABLE_KV_UNIFIED=1
+            shift
             ;;
         --thinking)
             ENABLE_THINKING=1
@@ -152,8 +181,7 @@ if [[ -z "${MODEL_PATH}" ]]; then
     else
         FOUND_MODELS=($(find "${SCRIPT_DIR}/models" -maxdepth 1 -iname "*spark*4b*.gguf" 2>/dev/null || true))
         if [[ ${#FOUND_MODELS[@]} -gt 0 ]]; then
-            echo -e "
-Select a model from ./models/:"
+            echo -e "\nSelect a model from ./models/:"
             select opt in "${FOUND_MODELS[@]}" "Descargar Spark-X2.5-4B" "Salir"; do
                 if [[ -n "${opt}" && -f "${opt}" ]]; then
                     MODEL_PATH="${opt}"
@@ -175,20 +203,66 @@ fi
 
 # 3. Context Calculation (Optimized for 16GB VRAM & Spark's Hybrid SWA Architecture)
 if [[ -n "${CUSTOM_CTX}" ]]; then
-    CTX_PER_SLOT="${CUSTOM_CTX}"
-elif [[ "${SLOTS}" -le 1 ]]; then
-    CTX_PER_SLOT=524288 # 512k context (1 slot, ~10.1GB VRAM)
-elif [[ "${SLOTS}" -le 2 ]]; then
-    CTX_PER_SLOT=262144 # 256k context per slot (512k total across 2 slots, ~10.1GB VRAM)
-elif [[ "${SLOTS}" -le 4 ]]; then
-    CTX_PER_SLOT=163840 # 160k context per slot (640k total across 4 slots, ~11.9GB VRAM)
-elif [[ "${SLOTS}" -le 6 ]]; then
-    CTX_PER_SLOT=106496 # 104k context per slot (640k total across 6 slots, ~11.9GB VRAM)
-else
-    CTX_PER_SLOT=81920  # 80k context per slot (640k total across 8 slots, ~11.9GB VRAM, leaves ~4GB headroom)
+    CUSTOM_CTX="$(parse_tokens "${CUSTOM_CTX}")"
+fi
+if [[ -n "${CUSTOM_CTX_SLOT}" ]]; then
+    CUSTOM_CTX_SLOT="$(parse_tokens "${CUSTOM_CTX_SLOT}")"
 fi
 
-TOTAL_CTX=$(( SLOTS * CTX_PER_SLOT ))
+if [[ -n "${CUSTOM_CTX_SLOT}" && -n "${CUSTOM_CTX}" ]]; then
+    CTX_PER_SLOT="${CUSTOM_CTX_SLOT}"
+    TOTAL_CTX="${CUSTOM_CTX}"
+elif [[ -n "${CUSTOM_CTX_SLOT}" ]]; then
+    CTX_PER_SLOT="${CUSTOM_CTX_SLOT}"
+    TOTAL_CTX=$(( SLOTS * CTX_PER_SLOT ))
+elif [[ -n "${CUSTOM_CTX}" ]]; then
+    TOTAL_CTX="${CUSTOM_CTX}"
+    CTX_PER_SLOT=$(( TOTAL_CTX / SLOTS ))
+elif [[ "${SLOTS}" -le 1 ]]; then
+    CTX_PER_SLOT=524288 # 512k context (1 slot, ~10.1GB VRAM)
+    TOTAL_CTX=$(( SLOTS * CTX_PER_SLOT ))
+elif [[ "${SLOTS}" -le 2 ]]; then
+    CTX_PER_SLOT=262144 # 256k context per slot (512k total across 2 slots, ~10.1GB VRAM)
+    TOTAL_CTX=$(( SLOTS * CTX_PER_SLOT ))
+elif [[ "${SLOTS}" -le 4 ]]; then
+    CTX_PER_SLOT=163840 # 160k context per slot (640k total across 4 slots, ~11.9GB VRAM)
+    TOTAL_CTX=$(( SLOTS * CTX_PER_SLOT ))
+elif [[ "${SLOTS}" -le 6 ]]; then
+    CTX_PER_SLOT=106496 # 104k context per slot (640k total across 6 slots, ~11.9GB VRAM)
+    TOTAL_CTX=$(( SLOTS * CTX_PER_SLOT ))
+else
+    CTX_PER_SLOT=81920  # 80k context per slot (640k total across 8 slots, ~11.9GB VRAM, leaves ~4GB headroom)
+    TOTAL_CTX=$(( SLOTS * CTX_PER_SLOT ))
+fi
+
+# Ensure minimum viable context per slot
+if [[ "${CTX_PER_SLOT}" -lt 1024 ]]; then
+    CTX_PER_SLOT=1024
+    TOTAL_CTX=$(( SLOTS * CTX_PER_SLOT ))
+fi
+
+# Dynamic batch sizes: clamp batch size to total context if context is small
+BATCH_SIZE=2048
+UBATCH_SIZE=512
+if [[ "${TOTAL_CTX}" -lt "${BATCH_SIZE}" ]]; then
+    BATCH_SIZE="${TOTAL_CTX}"
+fi
+if [[ "${BATCH_SIZE}" -lt "${UBATCH_SIZE}" ]]; then
+    UBATCH_SIZE="${BATCH_SIZE}"
+fi
+
+# Unified KV Cache Configuration
+KV_UNIFIED_ARGS=()
+KV_UNIFIED_STATUS="Dedicated per slot"
+if [[ "${ENABLE_KV_UNIFIED}" -eq 1 ]]; then
+    KV_UNIFIED_ARGS+=("-kvu")
+    if [[ -n "${CUSTOM_CTX_SLOT}" ]]; then
+        KV_UNIFIED_ARGS+=("--kv-unified-per-slot" "${CTX_PER_SLOT}")
+        KV_UNIFIED_STATUS="Unified shared pool (max ${CTX_PER_SLOT} per slot)"
+    else
+        KV_UNIFIED_STATUS="Unified shared pool (dynamic)"
+    fi
+fi
 
 # 4. Thinking Mode & Sampling Parameters
 JINJA_ARGS=("--jinja")
@@ -220,14 +294,15 @@ echo -e "${BOLD}Architecture:${NC}        ${GREEN}Spark2_5 (Hybrid 512-token SWA
 echo -e "${BOLD}Parallel Slots:${NC}      ${GREEN}${SLOTS} slots${NC}"
 echo -e "${BOLD}Context per Slot:${NC}    ${GREEN}${CTX_PER_SLOT} tokens ($(( CTX_PER_SLOT / 1024 ))k tokens)${NC}"
 echo -e "${BOLD}Total Context Pool:${NC}  ${GREEN}${TOTAL_CTX} tokens ($(( TOTAL_CTX / 1024 ))k tokens)${NC}"
+echo -e "${BOLD}Context Shift:${NC}       ${GREEN}${CTX_SHIFT_STATUS}${NC}"
+echo -e "${BOLD}KV Cache Allocation:${NC} ${GREEN}${KV_UNIFIED_STATUS}${NC}"
+echo -e "${BOLD}KV Cache Quant:${NC}      ${GREEN}Q4_0 (-ctk q4_0 -ctv q4_0)${NC}"
 echo -e "${BOLD}VRAM Utilization:${NC}    ${GREEN}Optimized for 16GB VRAM (Model + KV Cache ≈ 10-12GB, ~4GB headroom)${NC}"
 echo -e "${BOLD}Thinking Mode:${NC}       ${GREEN}${THINKING_STATUS}${NC}"
 echo -e "${BOLD}Temperature:${NC}         ${GREEN}${TEMPERATURE}${NC}"
 echo -e "${BOLD}Top-P:${NC}               ${GREEN}${TOP_P}${NC}"
-echo -e "${BOLD}Context Shift:${NC}       ${GREEN}${CTX_SHIFT_STATUS}${NC}"
 echo -e "${BOLD}CPU Threads:${NC}         ${GREEN}${THREADS} threads (-t ${THREADS})${NC}"
-echo -e "${BOLD}Batching:${NC}            ${GREEN}Continuous (-cb) | Chunked Prefill (-ub 512, -b 2048)${NC}"
-echo -e "${BOLD}KV Cache Quant:${NC}      ${GREEN}Q4_0 (-ctk q4_0 -ctv q4_0)${NC}"
+echo -e "${BOLD}Batching:${NC}            ${GREEN}Continuous (-cb) | Chunked Prefill (-ub ${UBATCH_SIZE}, -b ${BATCH_SIZE})${NC}"
 echo -e "${BOLD}Tool Calling:${NC}        ${GREEN}Native Jinja Template (--jinja enabled)${NC}"
 echo -e "${BOLD}GPU Offload:${NC}         ${GREEN}100% on AMD Radeon RX 9060 XT (-ngl 99 -fa auto)${NC}"
 echo -e "\n${BOLD}${YELLOW}=== Remote Connection Info (From another machine) ===${NC}"
@@ -239,4 +314,23 @@ echo -e "------------------------------------------------------\n"
 # Enable prompt and token stream exposure in /slots for monitor drill-down
 export LLAMA_SERVER_SLOTS_DEBUG=1
 
-exec "${SERVER_BIN}"     -m "${MODEL_PATH}"     --alias "${ALIAS}"     --host "${HOST}"     --port "${PORT}"     -c "${TOTAL_CTX}"     -np "${SLOTS}"     -b 2048     -ub 512     -cb     -ctk q4_0     -ctv q4_0     -ngl 99     -fa auto     "${JINJA_ARGS[@]}"     -t "${THREADS}"     --temp "${TEMPERATURE}"     --top-p "${TOP_P}"     "${CTX_SHIFT_ARGS[@]}"
+exec "${SERVER_BIN}" \
+    -m "${MODEL_PATH}" \
+    --alias "${ALIAS}" \
+    --host "${HOST}" \
+    --port "${PORT}" \
+    -c "${TOTAL_CTX}" \
+    -np "${SLOTS}" \
+    -b "${BATCH_SIZE}" \
+    -ub "${UBATCH_SIZE}" \
+    -cb \
+    "${KV_UNIFIED_ARGS[@]}" \
+    -ctk q4_0 \
+    -ctv q4_0 \
+    -ngl 99 \
+    -fa auto \
+    "${JINJA_ARGS[@]}" \
+    -t "${THREADS}" \
+    --temp "${TEMPERATURE}" \
+    --top-p "${TOP_P}" \
+    "${CTX_SHIFT_ARGS[@]}"

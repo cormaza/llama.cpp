@@ -35,6 +35,21 @@ CUSTOM_NGL=""
 ALIAS="k2-horizon-7b"
 THREADS=8
 
+# Helper function to parse human-readable token notation (e.g., 32k, 64k, 128k, 256k)
+parse_tokens() {
+    local val="${1,,}"
+    val="${val//[[:space:]]/}"
+    if [[ "${val}" =~ ^([0-9]+)k$ ]]; then
+        echo $(( ${BASH_REMATCH[1]} * 1024 ))
+    elif [[ "${val}" =~ ^([0-9]+)m$ ]]; then
+        echo $(( ${BASH_REMATCH[1]} * 1024 * 1024 ))
+    elif [[ "${val}" =~ ^[0-9]+$ ]]; then
+        echo "${val}"
+    else
+        echo "${val}"
+    fi
+}
+
 # Detect Primary LAN IP for remote access
 LOCAL_IP="$(ip -4 route get 1.1.1.1 2>/dev/null | awk '{print $7}' | head -n1 || echo "127.0.0.1")"
 
@@ -48,7 +63,7 @@ Starts llama-server for K2-Horizon-7B configured for Ultra-Deep Context
 Options:
   -a, --alias NAMES       Model alias for API clients (default: k2-horizon-7b,k2-horizon,gpt-4o)
   -m, --model PATH        Path to GGUF model (default: ./models/K2-Horizon-7B-Q4_K_M.gguf)
-  -c, --context N         Context size (default: 131072 for 100% GPU, up to 524288 native)
+  -c, --context N         Context size (default: 131072 for 100% GPU; supports 64k, 128k, 256k, 512k)
   --thinking              Enable reasoning mode (default; uses temp 1.0, top_p 0.95)
   --no-thinking           Disable reasoning mode (direct response; uses temp 0.7, top_p 0.80)
   --temp N                Sampling temperature override (default: 1.0 with thinking, 0.7 without)
@@ -183,7 +198,11 @@ if [[ -z "${MODEL_PATH}" ]]; then
 fi
 
 # 3. Context & GPU Offload calculation
-CONTEXT="${CUSTOM_CTX:-131072}"
+if [[ -n "${CUSTOM_CTX}" ]]; then
+    CONTEXT="$(parse_tokens "${CUSTOM_CTX}")"
+else
+    CONTEXT=131072
+fi
 
 if [[ -n "${CUSTOM_NGL}" ]]; then
     GPU_LAYERS="${CUSTOM_NGL}"
@@ -199,6 +218,16 @@ else
     # 512k context (~22.8GB KV cache): hybrid mode with system RAM
     GPU_LAYERS=20
     OFFLOAD_DESC="20 layers to GPU (Hybrid mode: remaining in RAM via Intel Ultra 7 265K)"
+fi
+
+# Dynamic batch sizes: clamp batch size to total context if context is small
+BATCH_SIZE=2048
+UBATCH_SIZE=512
+if [[ "${CONTEXT}" -lt "${BATCH_SIZE}" ]]; then
+    BATCH_SIZE="${CONTEXT}"
+fi
+if [[ "${BATCH_SIZE}" -lt "${UBATCH_SIZE}" ]]; then
+    UBATCH_SIZE="${BATCH_SIZE}"
 fi
 
 # 4. Template & Sampling Configuration
@@ -231,7 +260,7 @@ echo -e "${BOLD}Context Window:${NC}      ${GREEN}${CONTEXT} tokens ($(( CONTEXT
 echo -e "${BOLD}Parallel Slots:${NC}      ${GREEN}1 slot (Dedicated deep ingestion)${NC}"
 echo -e "${BOLD}KV Cache Precision:${NC}  ${GREEN}${KV_QUANT} (-ctk ${KV_QUANT} -ctv ${KV_QUANT})${NC}"
 echo -e "${BOLD}GPU Offload:${NC}         ${GREEN}${OFFLOAD_DESC} (-ngl ${GPU_LAYERS} -fa auto)${NC}"
-echo -e "${BOLD}Batching:${NC}            ${GREEN}Continuous (-cb) | Chunked Prefill (-ub 512, -b 2048)${NC}"
+echo -e "${BOLD}Batching:${NC}            ${GREEN}Continuous (-cb) | Chunked Prefill (-ub ${UBATCH_SIZE}, -b ${BATCH_SIZE})${NC}"
 echo -e "${BOLD}Thinking Mode:${NC}       ${GREEN}${THINKING_STATUS}${NC}"
 echo -e "${BOLD}Chat Template:${NC}       ${GREEN}K2-Horizon Native Jinja (--jinja enabled)${NC}"
 echo -e "${BOLD}Sampling Params:${NC}     ${GREEN}temp ${TEMPERATURE} | top_p ${TOP_P} | top_k ${TOP_K} | presence ${PRESENCE_PENALTY}${NC}"
@@ -251,8 +280,8 @@ exec "${SERVER_BIN}" \
     --port "${PORT}" \
     -c "${CONTEXT}" \
     -np 1 \
-    -b 2048 \
-    -ub 512 \
+    -b "${BATCH_SIZE}" \
+    -ub "${UBATCH_SIZE}" \
     -cb \
     -ctk "${KV_QUANT}" \
     -ctv "${KV_QUANT}" \
