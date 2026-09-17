@@ -26,6 +26,7 @@ HOST="0.0.0.0"
 PORT=8080
 SLOTS=1
 CUSTOM_CTX=""
+CUSTOM_CTX_SLOT=""
 CUSTOM_TEMP=""
 CUSTOM_TOP_P=""
 CUSTOM_TOP_K=""
@@ -33,7 +34,23 @@ CUSTOM_PRESENCE=""
 KV_QUANT="q4_0"
 THREADS=4
 ENABLE_CTX_SHIFT=1
+ENABLE_KV_UNIFIED=0
 ALIAS="gemma-4-12b"
+
+# Helper function to parse human-readable token notation (e.g., 32k, 64k, 128k, 256k)
+parse_tokens() {
+    local val="${1,,}"
+    val="${val//[[:space:]]/}"
+    if [[ "${val}" =~ ^([0-9]+)k$ ]]; then
+        echo $(( ${BASH_REMATCH[1]} * 1024 ))
+    elif [[ "${val}" =~ ^([0-9]+)m$ ]]; then
+        echo $(( ${BASH_REMATCH[1]} * 1024 * 1024 ))
+    elif [[ "${val}" =~ ^[0-9]+$ ]]; then
+        echo "${val}"
+    else
+        echo "${val}"
+    fi
+}
 
 LOCAL_IP="$(ip -4 route get 1.1.1.1 2>/dev/null | awk '{print $7}' | head -n1 || echo "127.0.0.1")"
 
@@ -46,27 +63,31 @@ featuring MTP speculative acceleration (~42 t/s), continuous batching,
 and automatic context-shifting for continuous agent operations (e.g. OMP, OpenCode).
 
 Options:
-  -a, --alias NAMES       Model alias for API clients (default: gemma-4-12b,gemma-4,gemma,gpt-4o)
-  -m, --model PATH        Path to GGUF model (default: ./models/gemma-4-12b-it-UD-Q4_K_XL.gguf)
-  --mtp PATH              Path to MTP draft model (default: ./models/mtp-gemma-4-12b-it-Q8_0.gguf)
-  --no-mtp                Disable MTP speculative decoding
-  -c, --context, --ctx-slot N  Context per slot (default: 131072 for <=4 slots, 65536 for 8 slots)
-  --slots N               Number of parallel agent slots (default: 1; use 2, 4, 8 for multi-agent)
-  --temp N                Sampling temperature (default: 0.2, low/precise for coding)
-  --top-p N               Top-p sampling (default: 0.95)
-  --top-k N               Top-k sampling (default: 40)
-  --presence-penalty N    Presence penalty (default: 0.0, avoids distorted paths/commands)
-  -t, --threads N         Number of CPU threads (default: 4)
-  --no-context-shift      Disable automatic context shifting
-  -p, --port PORT         HTTP server port (default: 8080)
-  --host HOST             Host address to bind (default: 0.0.0.0)
-  -h, --help              Show this help message
+  -a, --alias NAMES             Model alias for API clients (default: gemma-4-12b,gemma-4,gemma,gpt-4o)
+  -m, --model PATH              Path to GGUF model (default: ./models/gemma-4-12b-it-UD-Q4_K_XL.gguf)
+  --mtp PATH                    Path to MTP draft model (default: ./models/mtp-gemma-4-12b-it-Q8_0.gguf)
+  --no-mtp                      Disable MTP speculative decoding
+  -c, --context, --total-ctx N  Total context pool across all slots (default: 131072; supports 64k, 128k, 256k)
+  --ctx-slot N                  Context per slot (e.g. 32k, 64k; total = slots * ctx_slot)
+  --slots, -np N                Number of parallel agent slots (default: 1; use 2, 4, 8 for multi-agent)
+  -kvu, --kv-unified            Enable dynamic unified KV cache pool shared across all slots
+  --temp N                      Sampling temperature (default: 0.2, low/precise for coding)
+  --top-p N                     Top-p sampling (default: 0.95)
+  --top-k N                     Top-k sampling (default: 40)
+  --presence-penalty N          Presence penalty (default: 0.0, avoids distorted paths/commands)
+  -t, --threads N               Number of CPU threads (default: 4)
+  --no-context-shift            Disable automatic context shifting
+  -p, --port PORT               HTTP server port (default: 8080)
+  --host HOST                   Host address to bind (default: 0.0.0.0)
+  -h, --help                    Show this help message
 
 Examples:
-  ./start-gemma-max-context.sh               # 1 slot x 128k context with MTP (~42 t/s)
-  ./start-gemma-max-context.sh --slots 4     # 4 slots x 128k context with MTP
-  ./start-gemma-max-context.sh --slots 8     # 8 slots x 64k context with MTP (fits in 16GB VRAM)
-  ./start-gemma-max-context.sh -c 262144     # 1 slot x 256k deep context
+  ./start-gemma-max-context.sh                            # 1 slot x 128k context with MTP (~42 t/s)
+  ./start-gemma-max-context.sh --slots 4                  # 4 slots x 32k context with MTP (128k total)
+  ./start-gemma-max-context.sh --slots 4 --ctx-slot 64k   # 4 slots x 64k context (256k total pool)
+  ./start-gemma-max-context.sh --slots 8 --ctx-slot 16k   # 8 slots x 16k context for agent swarms
+  ./start-gemma-max-context.sh -c 256k                    # 1 slot x 256k deep context
+  ./start-gemma-max-context.sh -kvu -c 128k --slots 4     # Unified 128k KV pool shared dynamically
 EOF
 }
 
@@ -88,13 +109,21 @@ while [[ $# -gt 0 ]]; do
             ENABLE_MTP=0
             shift
             ;;
-        -c|--context|--ctx-slot)
+        -c|--context|--ctx|--total-ctx|--total-context)
             CUSTOM_CTX="$2"
             shift 2
             ;;
-        --slots)
+        --ctx-slot|--slot-ctx|--context-slot)
+            CUSTOM_CTX_SLOT="$2"
+            shift 2
+            ;;
+        --slots|-np|--parallel)
             SLOTS="$2"
             shift 2
+            ;;
+        -kvu|--kv-unified)
+            ENABLE_KV_UNIFIED=1
+            shift
             ;;
         --temp|--temperature)
             CUSTOM_TEMP="$2"
@@ -162,23 +191,67 @@ if [[ ! -f "${MODEL_PATH}" ]]; then
 fi
 
 # 3. Context calculation per slot & MTP Setup
+if [[ -n "${CUSTOM_CTX}" ]]; then
+    CUSTOM_CTX="$(parse_tokens "${CUSTOM_CTX}")"
+fi
+if [[ -n "${CUSTOM_CTX_SLOT}" ]]; then
+    CUSTOM_CTX_SLOT="$(parse_tokens "${CUSTOM_CTX_SLOT}")"
+fi
+
+if [[ -n "${CUSTOM_CTX_SLOT}" && -n "${CUSTOM_CTX}" ]]; then
+    # Both explicitly specified: user pinned slot context and total pool
+    CTX_PER_SLOT="${CUSTOM_CTX_SLOT}"
+    TOTAL_CTX="${CUSTOM_CTX}"
+elif [[ -n "${CUSTOM_CTX_SLOT}" ]]; then
+    # Per-slot specified: total pool is slots * per_slot
+    CTX_PER_SLOT="${CUSTOM_CTX_SLOT}"
+    TOTAL_CTX=$(( SLOTS * CTX_PER_SLOT ))
+elif [[ -n "${CUSTOM_CTX}" ]]; then
+    # Total context pool specified: per-slot is total / slots
+    TOTAL_CTX="${CUSTOM_CTX}"
+    CTX_PER_SLOT=$(( TOTAL_CTX / SLOTS ))
+else
+    # Default: 131072 total context pool
+    TOTAL_CTX=131072
+    CTX_PER_SLOT=$(( TOTAL_CTX / SLOTS ))
+fi
+
+# Ensure minimum viable context per slot
+if [[ "${CTX_PER_SLOT}" -lt 1024 ]]; then
+    CTX_PER_SLOT=1024
+    TOTAL_CTX=$(( SLOTS * CTX_PER_SLOT ))
+fi
+
+# Dynamic batch sizes: clamp batch size to total context if context is small
+BATCH_SIZE=2048
+UBATCH_SIZE=512
+if [[ "${TOTAL_CTX}" -lt "${BATCH_SIZE}" ]]; then
+    BATCH_SIZE="${TOTAL_CTX}"
+fi
+if [[ "${BATCH_SIZE}" -lt "${UBATCH_SIZE}" ]]; then
+    UBATCH_SIZE="${BATCH_SIZE}"
+fi
+
+# Unified KV Cache Configuration
+KV_UNIFIED_ARGS=()
+KV_UNIFIED_STATUS="Dedicated per slot"
+if [[ "${ENABLE_KV_UNIFIED}" -eq 1 ]]; then
+    KV_UNIFIED_ARGS+=("-kvu")
+    if [[ -n "${CUSTOM_CTX_SLOT}" ]]; then
+        KV_UNIFIED_ARGS+=("--kv-unified-per-slot" "${CTX_PER_SLOT}")
+        KV_UNIFIED_STATUS="Unified shared pool (max ${CTX_PER_SLOT} per slot)"
+    else
+        KV_UNIFIED_STATUS="Unified shared pool (dynamic)"
+    fi
+fi
+
+# MTP Setup
 MTP_ARGS=()
 MTP_STATUS="Disabled"
 if [[ "${ENABLE_MTP}" -eq 1 && -f "${MTP_PATH}" ]]; then
     MTP_STATUS="Active (Multi-Token Prediction: $(basename "${MTP_PATH}"))"
     MTP_ARGS+=("--spec-type" "draft-mtp" "-md" "${MTP_PATH}" "-ngld" "99")
-    if [[ -n "${CUSTOM_CTX}" ]]; then
-        CTX_PER_SLOT="${CUSTOM_CTX}"
-    elif [[ "${SLOTS}" -le 4 ]]; then
-        CTX_PER_SLOT=131072 # 128k context per slot for 1-4 slots
-    else
-        CTX_PER_SLOT=65536  # 64k context per slot for 8 slots (fits MTP in 16GB VRAM)
-    fi
-else
-    CTX_PER_SLOT=${CUSTOM_CTX:-131072}
 fi
-
-TOTAL_CTX=$(( SLOTS * CTX_PER_SLOT ))
 
 CTX_SHIFT_ARGS=()
 if [[ "${ENABLE_CTX_SHIFT}" -eq 1 ]]; then
@@ -196,7 +269,9 @@ echo -e "${BOLD}Context per Slot:${NC}    ${GREEN}${CTX_PER_SLOT} tokens ($(( CT
 echo -e "${BOLD}Total Context Pool:${NC}  ${GREEN}${TOTAL_CTX} tokens ($(( TOTAL_CTX / 1024 ))k tokens)${NC}"
 echo -e "${BOLD}CPU Threads:${NC}         ${GREEN}${THREADS} threads (-t ${THREADS})${NC}"
 echo -e "${BOLD}Context Shift:${NC}       ${GREEN}${CTX_SHIFT_STATUS}${NC}"
+echo -e "${BOLD}KV Cache Allocation:${NC} ${GREEN}${KV_UNIFIED_STATUS}${NC}"
 echo -e "${BOLD}KV Cache Precision:${NC}  ${GREEN}${KV_QUANT}${NC}"
+echo -e "${BOLD}Batching:${NC}            ${GREEN}Continuous (-cb) | Chunked Prefill (-ub ${UBATCH_SIZE}, -b ${BATCH_SIZE})${NC}"
 echo -e "${BOLD}Sampling Params:${NC}     ${GREEN}temp ${TEMPERATURE} | top_p ${TOP_P} | top_k ${TOP_K} | presence ${PRESENCE_PENALTY}${NC}"
 echo -e "${BOLD}GPU Offload:${NC}         ${GREEN}100% on AMD Radeon RX 9060 XT (-ngl 99 -fa auto)${NC}"
 echo -e "${BOLD}Speculative Dec:${NC}     ${GREEN}${MTP_STATUS}${NC}"
@@ -218,9 +293,10 @@ exec "${SERVER_BIN}" \
     --port "${PORT}" \
     -c "${TOTAL_CTX}" \
     -np "${SLOTS}" \
-    -b 2048 \
-    -ub 512 \
+    -b "${BATCH_SIZE}" \
+    -ub "${UBATCH_SIZE}" \
     -cb \
+    "${KV_UNIFIED_ARGS[@]}" \
     -ctk "${KV_QUANT}" \
     -ctv "${KV_QUANT}" \
     -ngl 99 \

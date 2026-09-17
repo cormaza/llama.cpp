@@ -25,6 +25,7 @@ HOST="0.0.0.0"
 PORT=8080
 SLOTS=4
 CUSTOM_CTX=""
+CUSTOM_CTX_SLOT=""
 CUSTOM_TEMP=""
 CUSTOM_TOP_P=""
 CUSTOM_TOP_K=""
@@ -35,6 +36,22 @@ CUSTOM_NGL=""
 ALIAS="k2-horizon-7b"
 THREADS=6
 ENABLE_CTX_SHIFT=1
+ENABLE_KV_UNIFIED=0
+
+# Helper function to parse human-readable token notation (e.g., 32k, 64k, 128k, 256k)
+parse_tokens() {
+    local val="${1,,}"
+    val="${val//[[:space:]]/}"
+    if [[ "${val}" =~ ^([0-9]+)k$ ]]; then
+        echo $(( ${BASH_REMATCH[1]} * 1024 ))
+    elif [[ "${val}" =~ ^([0-9]+)m$ ]]; then
+        echo $(( ${BASH_REMATCH[1]} * 1024 * 1024 ))
+    elif [[ "${val}" =~ ^[0-9]+$ ]]; then
+        echo "${val}"
+    else
+        echo "${val}"
+    fi
+}
 
 # Detect Primary LAN IP for remote access
 LOCAL_IP="$(ip -4 route get 1.1.1.1 2>/dev/null | awk '{print $7}' | head -n1 || echo "127.0.0.1")"
@@ -48,30 +65,33 @@ featuring zero-freeze chunked prefill, Q4_0 KV cache, continuous batching,
 and native K2-Horizon Jinja template.
 
 Options:
-  -a, --alias NAMES       Model alias for API clients (default: k2-horizon-7b,k2-horizon,gpt-4o)
-  -m, --model PATH        Path to GGUF model (default: ./models/K2-Horizon-7B-Q4_K_M.gguf)
-  -c, --context, --ctx-slot N  Context per slot (default: 32768 for 4 slots, 16384 for 8 slots)
-  --slots N               Number of parallel agent slots (default: 4; use 8 for large teams)
-  --thinking              Enable reasoning mode (default; uses temp 1.0, top_p 0.95, reasoning tags)
-  --no-thinking           Disable reasoning mode (direct agent mode; uses temp 0.7, top_p 0.80)
-  --temp N                Sampling temperature override (default: 1.0 with thinking, 0.7 without)
-  --top-p N               Top-p sampling override (default: 0.95 with thinking, 0.80 without)
-  --top-k N               Top-k sampling override (default: 40)
-  --presence-penalty N    Presence penalty override (default: 0.0 with thinking, 1.5 without)
-  -t, --threads N         Number of CPU threads (default: 6)
-  --context-shift         Enable context shifting for continuous agent operation (default: enabled)
-  --no-context-shift      Disable context shifting
-  -p, --port PORT         HTTP server port (default: 8080)
-  --host HOST             Host address to bind (default: 0.0.0.0)
-  --kv-quant TYPE         KV Cache precision: q4_0 (default, fast) | q8_0 | f16
-  --ngl N                 Number of layers to offload to GPU (default: 99, 100% GPU)
-  -h, --help              Show this help message
+  -a, --alias NAMES             Model alias for API clients (default: k2-horizon-7b,k2-horizon,gpt-4o)
+  -m, --model PATH              Path to GGUF model (default: ./models/K2-Horizon-7B-Q4_K_M.gguf)
+  -c, --context, --total-ctx N  Total context pool across all slots (supports 64k, 128k, etc.)
+  --ctx-slot N                  Explicit context per slot (e.g. 32k, 64k; total = slots * ctx_slot)
+  --slots, -np N                Number of parallel agent slots (default: 4; use 8 for large teams)
+  -kvu, --kv-unified            Enable dynamic unified KV cache pool shared across all slots
+  --thinking                    Enable reasoning mode (default; uses temp 1.0, top_p 0.95, reasoning tags)
+  --no-thinking                 Disable reasoning mode (direct agent mode; uses temp 0.7, top_p 0.80)
+  --temp N                      Sampling temperature override (default: 1.0 with thinking, 0.7 without)
+  --top-p N                     Top-p sampling override (default: 0.95 with thinking, 0.80 without)
+  --top-k N                     Top-k sampling override (default: 40)
+  --presence-penalty N          Presence penalty override (default: 0.0 with thinking, 1.5 without)
+  -t, --threads N               Number of CPU threads (default: 6)
+  --context-shift               Enable context shifting for continuous agent operation (default: enabled)
+  --no-context-shift            Disable context shifting
+  -p, --port PORT               HTTP server port (default: 8080)
+  --host HOST                   Host address to bind (default: 0.0.0.0)
+  --kv-quant TYPE               KV Cache precision: q4_0 (default, fast) | q8_0 | f16
+  --ngl N                       Number of layers to offload to GPU (default: 99, 100% GPU)
+  -h, --help                    Show this help message
 
 Examples:
-  ./start-k2-horizon-agent.sh                     # 4 slots x 32k with thinking (100% VRAM)
-  ./start-k2-horizon-agent.sh --no-thinking       # Fast direct tool use / coding
-  ./start-k2-horizon-agent.sh --slots 8           # 8 slots x 16k for heavy agent swarms
-  ./start-k2-horizon-agent.sh --slots 2 -c 65536  # 2 slots x 64k for dual deep agents
+  ./start-k2-horizon-agent.sh                            # 4 slots x 32k with thinking (128k total)
+  ./start-k2-horizon-agent.sh --ctx-slot 64k             # 4 slots x 64k (256k total pool)
+  ./start-k2-horizon-agent.sh --slots 2 --ctx-slot 128k  # 2 slots x 128k for dual deep agents
+  ./start-k2-horizon-agent.sh --slots 8 --ctx-slot 16k   # 8 slots x 16k for heavy agent swarms
+  ./start-k2-horizon-agent.sh -kvu -c 128k               # Unified 128k KV pool shared dynamically
 EOF
 }
 
@@ -109,17 +129,25 @@ while [[ $# -gt 0 ]]; do
             CUSTOM_PRESENCE="$2"
             shift 2
             ;;
-        -c|--context|--ctx-slot)
+        -c|--context|--ctx|--total-ctx|--total-context)
             CUSTOM_CTX="$2"
+            shift 2
+            ;;
+        --ctx-slot|--slot-ctx|--context-slot)
+            CUSTOM_CTX_SLOT="$2"
             shift 2
             ;;
         -t|--threads)
             THREADS="$2"
             shift 2
             ;;
-        --slots)
+        --slots|-np|--parallel)
             SLOTS="$2"
             shift 2
+            ;;
+        -kvu|--kv-unified)
+            ENABLE_KV_UNIFIED=1
+            shift
             ;;
         --context-shift)
             ENABLE_CTX_SHIFT=1
@@ -199,18 +227,60 @@ if [[ -z "${MODEL_PATH}" ]]; then
     fi
 fi
 
-# 3. Context calculation per slot
+# 3. Context calculation and KV configuration
 if [[ -n "${CUSTOM_CTX}" ]]; then
-    CTX_PER_SLOT="${CUSTOM_CTX}"
-elif [[ "${SLOTS}" -le 2 ]]; then
-    CTX_PER_SLOT=65536  # 64k context per slot for <=2 slots
-elif [[ "${SLOTS}" -le 4 ]]; then
-    CTX_PER_SLOT=32768  # 32k context per slot for 4 slots
-else
-    CTX_PER_SLOT=16384  # 16k context per slot for 8 slots
+    CUSTOM_CTX="$(parse_tokens "${CUSTOM_CTX}")"
+fi
+if [[ -n "${CUSTOM_CTX_SLOT}" ]]; then
+    CUSTOM_CTX_SLOT="$(parse_tokens "${CUSTOM_CTX_SLOT}")"
 fi
 
-TOTAL_CTX=$(( SLOTS * CTX_PER_SLOT ))
+if [[ -n "${CUSTOM_CTX_SLOT}" && -n "${CUSTOM_CTX}" ]]; then
+    # Both explicitly specified: user pinned slot context and total pool
+    CTX_PER_SLOT="${CUSTOM_CTX_SLOT}"
+    TOTAL_CTX="${CUSTOM_CTX}"
+elif [[ -n "${CUSTOM_CTX_SLOT}" ]]; then
+    # Per-slot specified: total pool is slots * per_slot
+    CTX_PER_SLOT="${CUSTOM_CTX_SLOT}"
+    TOTAL_CTX=$(( SLOTS * CTX_PER_SLOT ))
+elif [[ -n "${CUSTOM_CTX}" ]]; then
+    # Total context pool specified: per-slot is total / slots
+    TOTAL_CTX="${CUSTOM_CTX}"
+    CTX_PER_SLOT=$(( TOTAL_CTX / SLOTS ))
+else
+    # Default: 131072 total context pool (e.g. 4 slots x 32k, or 2 slots x 64k, 8 slots x 16k)
+    TOTAL_CTX=131072
+    CTX_PER_SLOT=$(( TOTAL_CTX / SLOTS ))
+fi
+
+# Ensure minimum viable context per slot
+if [[ "${CTX_PER_SLOT}" -lt 1024 ]]; then
+    CTX_PER_SLOT=1024
+    TOTAL_CTX=$(( SLOTS * CTX_PER_SLOT ))
+fi
+
+# Dynamic batch sizes: clamp batch size to total context if context is small
+BATCH_SIZE=2048
+UBATCH_SIZE=512
+if [[ "${TOTAL_CTX}" -lt "${BATCH_SIZE}" ]]; then
+    BATCH_SIZE="${TOTAL_CTX}"
+fi
+if [[ "${BATCH_SIZE}" -lt "${UBATCH_SIZE}" ]]; then
+    UBATCH_SIZE="${BATCH_SIZE}"
+fi
+
+# Unified KV Cache Configuration
+KV_UNIFIED_ARGS=()
+KV_UNIFIED_STATUS="Dedicated per slot"
+if [[ "${ENABLE_KV_UNIFIED}" -eq 1 ]]; then
+    KV_UNIFIED_ARGS+=("-kvu")
+    if [[ -n "${CUSTOM_CTX_SLOT}" ]]; then
+        KV_UNIFIED_ARGS+=("--kv-unified-per-slot" "${CTX_PER_SLOT}")
+        KV_UNIFIED_STATUS="Unified shared pool (max ${CTX_PER_SLOT} per slot)"
+    else
+        KV_UNIFIED_STATUS="Unified shared pool (dynamic)"
+    fi
+fi
 
 # 4. Context shift
 CTX_SHIFT_ARGS=()
@@ -253,9 +323,10 @@ echo -e "${BOLD}Parallel Slots:${NC}      ${GREEN}${SLOTS} slots${NC}"
 echo -e "${BOLD}Context per Slot:${NC}    ${GREEN}${CTX_PER_SLOT} tokens ($(( CTX_PER_SLOT / 1024 ))k tokens)${NC}"
 echo -e "${BOLD}Total Context Pool:${NC}  ${GREEN}${TOTAL_CTX} tokens ($(( TOTAL_CTX / 1024 ))k tokens)${NC}"
 echo -e "${BOLD}Context Shift:${NC}       ${GREEN}${CTX_SHIFT_STATUS}${NC}"
+echo -e "${BOLD}KV Cache Allocation:${NC} ${GREEN}${KV_UNIFIED_STATUS}${NC}"
 echo -e "${BOLD}KV Cache Precision:${NC}  ${GREEN}${KV_QUANT} (-ctk ${KV_QUANT} -ctv ${KV_QUANT})${NC}"
 echo -e "${BOLD}GPU Offload:${NC}         ${GREEN}All 36 layers offloaded to GPU (-ngl ${GPU_LAYERS} -fa auto)${NC}"
-echo -e "${BOLD}Batching:${NC}            ${GREEN}Continuous (-cb) | Chunked Prefill (-ub 512, -b 2048)${NC}"
+echo -e "${BOLD}Batching:${NC}            ${GREEN}Continuous (-cb) | Chunked Prefill (-ub ${UBATCH_SIZE}, -b ${BATCH_SIZE})${NC}"
 echo -e "${BOLD}Thinking Mode:${NC}       ${GREEN}${THINKING_STATUS}${NC}"
 echo -e "${BOLD}Chat Template:${NC}       ${GREEN}K2-Horizon Native Jinja (--jinja enabled)${NC}"
 echo -e "${BOLD}Sampling Params:${NC}     ${GREEN}temp ${TEMPERATURE} | top_p ${TOP_P} | top_k ${TOP_K} | presence ${PRESENCE_PENALTY}${NC}"
@@ -275,9 +346,10 @@ exec "${SERVER_BIN}" \
     --port "${PORT}" \
     -c "${TOTAL_CTX}" \
     -np "${SLOTS}" \
-    -b 2048 \
-    -ub 512 \
+    -b "${BATCH_SIZE}" \
+    -ub "${UBATCH_SIZE}" \
     -cb \
+    "${KV_UNIFIED_ARGS[@]}" \
     -ctk "${KV_QUANT}" \
     -ctv "${KV_QUANT}" \
     -ngl "${GPU_LAYERS}" \

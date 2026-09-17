@@ -23,6 +23,7 @@ HOST="0.0.0.0"
 PORT=8080
 SLOTS=1
 CUSTOM_CTX=""
+CUSTOM_CTX_SLOT=""
 CUSTOM_TEMP=""
 CUSTOM_TOP_P=""
 CUSTOM_TOP_K=""
@@ -31,7 +32,23 @@ ENABLE_THINKING=1
 KV_QUANT="q4_0"
 GPU_LAYERS=50
 ENABLE_SPEC=1
+ENABLE_KV_UNIFIED=0
 RUN_CLI=0
+
+# Helper function to parse human-readable token notation (e.g., 32k, 64k, 128k, 256k)
+parse_tokens() {
+    local val="${1,,}"
+    val="${val//[[:space:]]/}"
+    if [[ "${val}" =~ ^([0-9]+)k$ ]]; then
+        echo $(( ${BASH_REMATCH[1]} * 1024 ))
+    elif [[ "${val}" =~ ^([0-9]+)m$ ]]; then
+        echo $(( ${BASH_REMATCH[1]} * 1024 * 1024 ))
+    elif [[ "${val}" =~ ^[0-9]+$ ]]; then
+        echo "${val}"
+    else
+        echo "${val}"
+    fi
+}
 
 # Detect local LAN IP for remote access
 LOCAL_IP="$(ip -4 route get 1.1.1.1 2>/dev/null | awk '{print $7}' | head -n1 || echo "127.0.0.1")"
@@ -45,29 +62,32 @@ with Froggeric Fixed Chat Templates and official sampling parameters for Qwen 3.
 Automatically downloads and caches the model from Hugging Face Hub if needed.
 
 Options:
-  --hf REPO:QUANT        Hugging Face repo and quant (default: ${DEFAULT_HF_MODEL})
-  -c, --context, --ctx-slot N  Context per slot (default: 131072 for 1 slot, 65536 for 2 slots, 32768 for 4 slots)
-  --slots N              Number of parallel agent slots (default: 1; use 2, 4 for multi-agent)
-  --thinking             Enable reasoning mode (default; uses temp 1.0, top_p 0.95, top_k 20)
-  --no-thinking          Disable reasoning mode (direct agent output; uses temp 0.7, top_p 0.80, top_k 20, presence 1.5)
-  --temp N               Sampling temperature override (default: 1.0 with thinking, 0.7 without thinking)
-  --top-p N              Top-p sampling override (default: 0.95 with thinking, 0.80 without thinking)
-  --top-k N              Top-k sampling override (default: 20)
-  --presence-penalty N   Presence penalty override (default: 0.0 with thinking, 1.5 without thinking)
-  -p, --port PORT        Server port (default: 8080)
-  --host HOST            Bind address (default: 0.0.0.0)
-  --kv-quant TYPE        KV cache precision: q4_0 (default) | q8_0 | f16
-  --ngl N                Layers offloaded to GPU (default: 50)
-  --no-spec              Disable N-Gram speculative decoding
-  --cli                  Run interactive CLI chat instead of HTTP server
-  -h, --help             Show this help message
+  --hf REPO:QUANT               Hugging Face repo and quant (default: ${DEFAULT_HF_MODEL})
+  -c, --context, --total-ctx N  Total context pool across all slots (supports 64k, 128k, 256k)
+  --ctx-slot N                  Explicit context per slot (e.g. 32k, 64k; total = slots * ctx_slot)
+  --slots, -np N                Number of parallel agent slots (default: 1; use 2, 4 for multi-agent)
+  -kvu, --kv-unified            Enable dynamic unified KV cache pool shared across all slots
+  --thinking                    Enable reasoning mode (default; uses temp 1.0, top_p 0.95, top_k 20)
+  --no-thinking                 Disable reasoning mode (direct agent output; uses temp 0.7, top_p 0.80, top_k 20, presence 1.5)
+  --temp N                      Sampling temperature override (default: 1.0 with thinking, 0.7 without thinking)
+  --top-p N                     Top-p sampling override (default: 0.95 with thinking, 0.80 without thinking)
+  --top-k N                     Top-k sampling override (default: 20)
+  --presence-penalty N          Presence penalty override (default: 0.0 with thinking, 1.5 without thinking)
+  -p, --port PORT               Server port (default: 8080)
+  --host HOST                   Bind address (default: 0.0.0.0)
+  --kv-quant TYPE               KV cache precision: q4_0 (default) | q8_0 | f16
+  --ngl N                       Layers offloaded to GPU (default: 50)
+  --no-spec                     Disable N-Gram speculative decoding
+  --cli                         Run interactive CLI chat instead of HTTP server
+  -h, --help                    Show this help message
 
 Examples:
-  ./start-qwen-hf.sh               # Default thinking mode (temp 1.0, top_p 0.95, deepseek reasoning)
-  ./start-qwen-hf.sh --no-thinking # Direct fast coding (temp 0.7, top_p 0.80, presence 1.5)
-  ./start-qwen-hf.sh --slots 2
-  ./start-qwen-hf.sh --slots 4 -c 32768
-  ./start-qwen-hf.sh --temp 0.6
+  ./start-qwen-hf.sh                            # Default thinking mode (temp 1.0, top_p 0.95, deepseek reasoning)
+  ./start-qwen-hf.sh --no-thinking              # Direct fast coding (temp 0.7, top_p 0.80, presence 1.5)
+  ./start-qwen-hf.sh --slots 2                  # 2 parallel slots
+  ./start-qwen-hf.sh --slots 4 --ctx-slot 32k   # 4 slots x 32k context (128k pool)
+  ./start-qwen-hf.sh -c 256k                    # 256k total context pool
+  ./start-qwen-hf.sh -kvu -c 128k --slots 4     # Shared dynamic KV cache pool
   ./start-qwen-hf.sh --cli
   ./start-qwen-hf.sh --hf unsloth/Qwen3.8-27B-GGUF:UD-IQ4_XS
 EOF
@@ -79,13 +99,21 @@ while [[ $# -gt 0 ]]; do
             HF_MODEL="$2"
             shift 2
             ;;
-        -c|--context|--ctx-slot)
+        -c|--context|--ctx|--total-ctx|--total-context)
             CUSTOM_CTX="$2"
             shift 2
             ;;
-        --slots)
+        --ctx-slot|--slot-ctx|--context-slot)
+            CUSTOM_CTX_SLOT="$2"
+            shift 2
+            ;;
+        --slots|-np|--parallel)
             SLOTS="$2"
             shift 2
+            ;;
+        -kvu|--kv-unified)
+            ENABLE_KV_UNIFIED=1
+            shift
             ;;
         --thinking)
             ENABLE_THINKING=1
@@ -172,18 +200,63 @@ fi
 
 # Context calculation per slot
 if [[ -n "${CUSTOM_CTX}" ]]; then
-    CTX_PER_SLOT="${CUSTOM_CTX}"
-elif [[ "${SLOTS}" -le 1 ]]; then
-    CTX_PER_SLOT=131072 # 128k context for single slot
-elif [[ "${SLOTS}" -le 2 ]]; then
-    CTX_PER_SLOT=65536  # 64k context per slot for 2 slots
-elif [[ "${SLOTS}" -le 4 ]]; then
-    CTX_PER_SLOT=32768  # 32k context per slot for 4 slots
-else
-    CTX_PER_SLOT=16384  # 16k context per slot for 8 slots
+    CUSTOM_CTX="$(parse_tokens "${CUSTOM_CTX}")"
+fi
+if [[ -n "${CUSTOM_CTX_SLOT}" ]]; then
+    CUSTOM_CTX_SLOT="$(parse_tokens "${CUSTOM_CTX_SLOT}")"
 fi
 
-TOTAL_CTX=$(( SLOTS * CTX_PER_SLOT ))
+if [[ -n "${CUSTOM_CTX_SLOT}" && -n "${CUSTOM_CTX}" ]]; then
+    CTX_PER_SLOT="${CUSTOM_CTX_SLOT}"
+    TOTAL_CTX="${CUSTOM_CTX}"
+elif [[ -n "${CUSTOM_CTX_SLOT}" ]]; then
+    CTX_PER_SLOT="${CUSTOM_CTX_SLOT}"
+    TOTAL_CTX=$(( SLOTS * CTX_PER_SLOT ))
+elif [[ -n "${CUSTOM_CTX}" ]]; then
+    TOTAL_CTX="${CUSTOM_CTX}"
+    CTX_PER_SLOT=$(( TOTAL_CTX / SLOTS ))
+elif [[ "${SLOTS}" -le 1 ]]; then
+    CTX_PER_SLOT=131072 # 128k context for single slot
+    TOTAL_CTX=$(( SLOTS * CTX_PER_SLOT ))
+elif [[ "${SLOTS}" -le 2 ]]; then
+    CTX_PER_SLOT=65536  # 64k context per slot for 2 slots
+    TOTAL_CTX=$(( SLOTS * CTX_PER_SLOT ))
+elif [[ "${SLOTS}" -le 4 ]]; then
+    CTX_PER_SLOT=32768  # 32k context per slot for 4 slots
+    TOTAL_CTX=$(( SLOTS * CTX_PER_SLOT ))
+else
+    CTX_PER_SLOT=16384  # 16k context per slot for 8 slots
+    TOTAL_CTX=$(( SLOTS * CTX_PER_SLOT ))
+fi
+
+# Ensure minimum viable context per slot
+if [[ "${CTX_PER_SLOT}" -lt 1024 ]]; then
+    CTX_PER_SLOT=1024
+    TOTAL_CTX=$(( SLOTS * CTX_PER_SLOT ))
+fi
+
+# Dynamic batch sizes: clamp batch size to total context if context is small
+BATCH_SIZE=2048
+UBATCH_SIZE=512
+if [[ "${TOTAL_CTX}" -lt "${BATCH_SIZE}" ]]; then
+    BATCH_SIZE="${TOTAL_CTX}"
+fi
+if [[ "${BATCH_SIZE}" -lt "${UBATCH_SIZE}" ]]; then
+    UBATCH_SIZE="${BATCH_SIZE}"
+fi
+
+# Unified KV Cache Configuration
+KV_UNIFIED_ARGS=()
+KV_UNIFIED_STATUS="Dedicated per slot"
+if [[ "${ENABLE_KV_UNIFIED}" -eq 1 ]]; then
+    KV_UNIFIED_ARGS+=("-kvu")
+    if [[ -n "${CUSTOM_CTX_SLOT}" ]]; then
+        KV_UNIFIED_ARGS+=("--kv-unified-per-slot" "${CTX_PER_SLOT}")
+        KV_UNIFIED_STATUS="Unified shared pool (max ${CTX_PER_SLOT} per slot)"
+    else
+        KV_UNIFIED_STATUS="Unified shared pool (dynamic)"
+    fi
+fi
 
 # Template & Sampling Configuration (Froggeric Qwen-Fixed Recommendations)
 JINJA_ARGS=("--jinja")
@@ -213,8 +286,10 @@ echo -e "${BOLD}HF Model:${NC}            ${CYAN}${HF_MODEL}${NC}"
 echo -e "${BOLD}Parallel Slots:${NC}      ${GREEN}${SLOTS} slots${NC}"
 echo -e "${BOLD}Context per Slot:${NC}    ${GREEN}${CTX_PER_SLOT} tokens ($(( CTX_PER_SLOT / 1024 ))k)${NC}"
 echo -e "${BOLD}Total Context Pool:${NC}  ${GREEN}${TOTAL_CTX} tokens ($(( TOTAL_CTX / 1024 ))k)${NC}"
+echo -e "${BOLD}KV Cache Allocation:${NC} ${GREEN}${KV_UNIFIED_STATUS}${NC}"
 echo -e "${BOLD}KV Cache Precision:${NC}  ${GREEN}${KV_QUANT}${NC}"
 echo -e "${BOLD}GPU Offload:${NC}         ${GREEN}${GPU_LAYERS} layers -> AMD Radeon RX 9060 XT (-fa auto)${NC}"
+echo -e "${BOLD}Batching:${NC}            ${GREEN}Continuous (-cb) | Chunked Prefill (-ub ${UBATCH_SIZE}, -b ${BATCH_SIZE})${NC}"
 echo -e "${BOLD}Speculative Dec:${NC}     ${GREEN}${SPEC_STATUS}${NC}"
 echo -e "${BOLD}Thinking Mode:${NC}       ${GREEN}${THINKING_STATUS}${NC}"
 echo -e "${BOLD}Chat Template:${NC}       ${GREEN}Froggeric Qwen-Fixed v22.5 (--jinja enabled)${NC}"
@@ -224,11 +299,15 @@ echo -e "${BOLD}CPU Threads:${NC}         ${GREEN}8 P-cores (Intel Core Ultra 7 
 if [[ "${RUN_CLI}" -eq 1 ]]; then
     echo -e "${BOLD}Mode:${NC}                ${YELLOW}Interactive CLI${NC}"
     echo -e "------------------------------------------------------\n"
+    CLI_BATCH="${BATCH_SIZE}"
+    CLI_UBATCH="${UBATCH_SIZE}"
+    if [[ "${CTX_PER_SLOT}" -lt "${CLI_BATCH}" ]]; then CLI_BATCH="${CTX_PER_SLOT}"; fi
+    if [[ "${CLI_BATCH}" -lt "${CLI_UBATCH}" ]]; then CLI_UBATCH="${CLI_BATCH}"; fi
     exec "${CLI_BIN}" \
         -hf "${HF_MODEL}" \
         -c "${CTX_PER_SLOT}" \
-        -b 2048 \
-        -ub 512 \
+        -b "${CLI_BATCH}" \
+        -ub "${CLI_UBATCH}" \
         -ctk "${KV_QUANT}" \
         -ctv "${KV_QUANT}" \
         -ngl "${GPU_LAYERS}" \
@@ -257,9 +336,10 @@ else
         --port "${PORT}" \
         -c "${TOTAL_CTX}" \
         -np "${SLOTS}" \
-        -b 2048 \
-        -ub 512 \
+        -b "${BATCH_SIZE}" \
+        -ub "${UBATCH_SIZE}" \
         -cb \
+        "${KV_UNIFIED_ARGS[@]}" \
         -ctk "${KV_QUANT}" \
         -ctv "${KV_QUANT}" \
         -ngl "${GPU_LAYERS}" \

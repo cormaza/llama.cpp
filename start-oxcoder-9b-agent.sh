@@ -41,6 +41,22 @@ ALIAS="oxcoder-9b"
 THREADS=8
 ENABLE_CTX_SHIFT=1
 ENABLE_SPEC=1
+ENABLE_KV_UNIFIED=0
+
+# Helper function to parse human-readable token notation (e.g., 32k, 64k, 128k, 256k)
+parse_tokens() {
+    local val="${1,,}"
+    val="${val//[[:space:]]/}"
+    if [[ "${val}" =~ ^([0-9]+)k$ ]]; then
+        echo $(( ${BASH_REMATCH[1]} * 1024 ))
+    elif [[ "${val}" =~ ^([0-9]+)m$ ]]; then
+        echo $(( ${BASH_REMATCH[1]} * 1024 * 1024 ))
+    elif [[ "${val}" =~ ^[0-9]+$ ]]; then
+        echo "${val}"
+    else
+        echo "${val}"
+    fi
+}
 
 # Detect Primary LAN IP for remote access
 LOCAL_IP="$(ip -4 route get 1.1.1.1 2>/dev/null | awk '{print $7}' | head -n1 || echo "127.0.0.1")"
@@ -54,34 +70,37 @@ Multi-Agent Coding Workflows, with Froggeric v21.3 Jinja templates, N-Gram specu
 decoding, Vision Projector (mmproj), and 100% GPU offload on AMD Radeon RX 9060 XT (16GB VRAM).
 
 Options:
-  -a, --alias NAMES       Model alias for API clients (default: oxcoder-9b,oxcoder,gpt-4o)
-  -m, --model PATH        Path to GGUF model (default: ./models/OxCoder-9B.Q4_K_M.gguf)
-  --mmproj PATH           Path to multimodal vision projector (default: auto-detect)
-  --no-mmproj             Disable multimodal vision projector
-  -c, --context N         Total context size pool (default: 262144 / 256k total)
-  --ctx-slot N            Explicit context per slot override (default: auto-split)
-  --slots N               Number of parallel agent slots (default: 4; use 8 for large agent swarms)
-  --thinking              Enable reasoning mode (default; uses temp 1.0, top_p 0.95, reasoning tags)
-  --no-thinking           Disable reasoning mode (direct agent mode; uses temp 0.6, top_p 0.80)
-  --temp N                Sampling temperature override (default: 1.0 with thinking, 0.6 without)
-  --top-p N               Top-p sampling override (default: 0.95 with thinking, 0.80 without)
-  --top-k N               Top-k sampling override (default: 40)
-  --presence-penalty N    Presence penalty override (default: 0.0 with thinking, 1.5 without)
-  -t, --threads N         Number of CPU threads (default: 8)
-  --context-shift         Enable context shifting for continuous agent operation (default: enabled)
-  --no-context-shift      Disable context shifting
-  --no-spec               Disable N-Gram speculative decoding
-  -p, --port PORT         HTTP server port (default: 8080)
-  --host HOST             Host address to bind (default: 0.0.0.0)
-  --kv-quant TYPE         KV Cache precision: q4_0 (default, fast) | q8_0 | f16
-  --ngl N                 Number of layers to offload to GPU (default: 99, 100% GPU)
-  -h, --help              Show this help message
+  -a, --alias NAMES             Model alias for API clients (default: oxcoder-9b,oxcoder,gpt-4o)
+  -m, --model PATH              Path to GGUF model (default: ./models/OxCoder-9B.Q4_K_M.gguf)
+  --mmproj PATH                 Path to multimodal vision projector (default: auto-detect)
+  --no-mmproj                   Disable multimodal vision projector
+  -c, --context, --total-ctx N  Total context pool across all slots (default: 262144 / 256k; supports 64k, 128k, etc.)
+  --ctx-slot N                  Explicit context per slot (e.g. 64k, 32k; total context = slots * ctx_slot)
+  --slots, -np N                Number of parallel agent slots (default: 4; use 8 for large agent swarms)
+  -kvu, --kv-unified            Enable dynamic unified KV cache pool shared across all slots
+  --thinking                    Enable reasoning mode (default; uses temp 1.0, top_p 0.95, reasoning tags)
+  --no-thinking                 Disable reasoning mode (direct agent mode; uses temp 0.6, top_p 0.80)
+  --temp N                      Sampling temperature override (default: 1.0 with thinking, 0.6 without)
+  --top-p N                     Top-p sampling override (default: 0.95 with thinking, 0.80 without)
+  --top-k N                     Top-k sampling override (default: 40)
+  --presence-penalty N          Presence penalty override (default: 0.0 with thinking, 1.5 without)
+  -t, --threads N               Number of CPU threads (default: 8)
+  --context-shift               Enable context shifting for continuous agent operation (default: enabled)
+  --no-context-shift            Disable context shifting
+  --no-spec                     Disable N-Gram speculative decoding
+  -p, --port PORT               HTTP server port (default: 8080)
+  --host HOST                   Host address to bind (default: 0.0.0.0)
+  --kv-quant TYPE               KV Cache precision: q4_0 (default, fast) | q8_0 | f16
+  --ngl N                       Number of layers to offload to GPU (default: 99, 100% GPU)
+  -h, --help                    Show this help message
 
 Examples:
-  ./start-oxcoder-9b-agent.sh                     # 4 slots x 64k with thinking (100% VRAM)
-  ./start-oxcoder-9b-agent.sh --no-thinking       # Fast direct tool use / ClawEval mode
-  ./start-oxcoder-9b-agent.sh --slots 8           # 8 slots x 32k for multi-agent teams
-  ./start-oxcoder-9b-agent.sh --slots 2 -c 131072 # 2 slots x 128k for dual deep agents
+  ./start-oxcoder-9b-agent.sh                            # 4 slots x 64k with thinking (256k total)
+  ./start-oxcoder-9b-agent.sh --ctx-slot 64k             # 4 slots x 64k explicit (256k total pool)
+  ./start-oxcoder-9b-agent.sh --slots 2 --ctx-slot 128k  # 2 slots x 128k for dual deep agents (256k total)
+  ./start-oxcoder-9b-agent.sh --slots 2 -c 128k          # 2 slots x 64k from 128k total pool
+  ./start-oxcoder-9b-agent.sh --slots 8 --ctx-slot 32k   # 8 slots x 32k for agent swarms (256k total)
+  ./start-oxcoder-9b-agent.sh -kvu -c 256k               # Unified shared 256k KV pool for all slots
 EOF
 }
 
@@ -127,11 +146,11 @@ while [[ $# -gt 0 ]]; do
             CUSTOM_PRESENCE="$2"
             shift 2
             ;;
-        -c|--context)
+        -c|--context|--ctx|--total-ctx|--total-context)
             CUSTOM_CTX="$2"
             shift 2
             ;;
-        --ctx-slot)
+        --ctx-slot|--slot-ctx|--context-slot)
             CUSTOM_CTX_SLOT="$2"
             shift 2
             ;;
@@ -139,9 +158,13 @@ while [[ $# -gt 0 ]]; do
             THREADS="$2"
             shift 2
             ;;
-        --slots)
+        --slots|-np|--parallel)
             SLOTS="$2"
             shift 2
+            ;;
+        -kvu|--kv-unified)
+            ENABLE_KV_UNIFIED=1
+            shift
             ;;
         --context-shift)
             ENABLE_CTX_SHIFT=1
@@ -254,30 +277,64 @@ else
     MMPROJ_STATUS="Disabled (--no-mmproj)"
 fi
 
-# 4. Context calculation and VRAM safety bounds
-# OxCoder-9B native max context is 262144. In 16GB VRAM, 262k total pool is the safe maximum.
-MAX_SAFE_CTX=262144
+# 4. Context calculation and KV configuration
+if [[ -n "${CUSTOM_CTX}" ]]; then
+    CUSTOM_CTX="$(parse_tokens "${CUSTOM_CTX}")"
+fi
 if [[ -n "${CUSTOM_CTX_SLOT}" ]]; then
+    CUSTOM_CTX_SLOT="$(parse_tokens "${CUSTOM_CTX_SLOT}")"
+fi
+
+if [[ -n "${CUSTOM_CTX_SLOT}" && -n "${CUSTOM_CTX}" ]]; then
+    # Both explicitly specified: user pinned slot context and total pool
+    CTX_PER_SLOT="${CUSTOM_CTX_SLOT}"
+    TOTAL_CTX="${CUSTOM_CTX}"
+elif [[ -n "${CUSTOM_CTX_SLOT}" ]]; then
+    # Per-slot specified: total pool is slots * per_slot
     CTX_PER_SLOT="${CUSTOM_CTX_SLOT}"
     TOTAL_CTX=$(( SLOTS * CTX_PER_SLOT ))
 elif [[ -n "${CUSTOM_CTX}" ]]; then
-    if [[ "${CUSTOM_CTX}" -ge 131072 && "${SLOTS}" -gt 1 ]]; then
-        TOTAL_CTX="${CUSTOM_CTX}"
-        CTX_PER_SLOT=$(( TOTAL_CTX / SLOTS ))
-    else
-        CTX_PER_SLOT="${CUSTOM_CTX}"
-        TOTAL_CTX=$(( SLOTS * CTX_PER_SLOT ))
-    fi
+    # Total context pool specified: per-slot is total / slots
+    TOTAL_CTX="${CUSTOM_CTX}"
+    CTX_PER_SLOT=$(( TOTAL_CTX / SLOTS ))
 else
-    TOTAL_CTX="${MAX_SAFE_CTX}"
+    # Default: 262144 total context pool distributed across slots
+    TOTAL_CTX=262144
     CTX_PER_SLOT=$(( TOTAL_CTX / SLOTS ))
 fi
 
-if [[ "${TOTAL_CTX}" -gt "${MAX_SAFE_CTX}" ]]; then
-    echo -e "${YELLOW}[WARN] Total context (${TOTAL_CTX}) exceeds the 262k safe capacity for 16GB VRAM.${NC}"
-    echo -e "${YELLOW}[WARN] Capping total context to ${MAX_SAFE_CTX} ($(( MAX_SAFE_CTX / SLOTS )) per slot) to avoid Out-Of-Memory crashes.${NC}"
-    TOTAL_CTX="${MAX_SAFE_CTX}"
-    CTX_PER_SLOT=$(( TOTAL_CTX / SLOTS ))
+# Ensure minimum viable context per slot
+if [[ "${CTX_PER_SLOT}" -lt 1024 ]]; then
+    CTX_PER_SLOT=1024
+    TOTAL_CTX=$(( SLOTS * CTX_PER_SLOT ))
+fi
+
+# Informational notification if context pool is exceptionally large
+if [[ "${TOTAL_CTX}" -gt 262144 ]]; then
+    echo -e "${YELLOW}[NOTE] Total context pool (${TOTAL_CTX} tokens, $(( TOTAL_CTX / 1024 ))k) exceeds 262k.${NC}"
+fi
+
+# Dynamic batch sizes: clamp batch size to total context if context is small
+BATCH_SIZE=2048
+UBATCH_SIZE=1024
+if [[ "${TOTAL_CTX}" -lt "${BATCH_SIZE}" ]]; then
+    BATCH_SIZE="${TOTAL_CTX}"
+fi
+if [[ "${BATCH_SIZE}" -lt "${UBATCH_SIZE}" ]]; then
+    UBATCH_SIZE="${BATCH_SIZE}"
+fi
+
+# Unified KV Cache Configuration
+KV_UNIFIED_ARGS=()
+KV_UNIFIED_STATUS="Dedicated per slot"
+if [[ "${ENABLE_KV_UNIFIED}" -eq 1 ]]; then
+    KV_UNIFIED_ARGS+=("-kvu")
+    if [[ -n "${CUSTOM_CTX_SLOT}" ]]; then
+        KV_UNIFIED_ARGS+=("--kv-unified-per-slot" "${CTX_PER_SLOT}")
+        KV_UNIFIED_STATUS="Unified shared pool (max ${CTX_PER_SLOT} per slot)"
+    else
+        KV_UNIFIED_STATUS="Unified shared pool (dynamic)"
+    fi
 fi
 
 # 5. Context Shift Configuration
@@ -333,9 +390,9 @@ echo -e "${BOLD}Parallel Slots:${NC}      ${GREEN}${SLOTS} slots${NC}"
 echo -e "${BOLD}Context per Slot:${NC}    ${GREEN}${CTX_PER_SLOT} tokens ($(( CTX_PER_SLOT / 1024 ))k tokens)${NC}"
 echo -e "${BOLD}Total Context Pool:${NC}  ${GREEN}${TOTAL_CTX} tokens ($(( TOTAL_CTX / 1024 ))k tokens)${NC}"
 echo -e "${BOLD}Context Shift:${NC}       ${GREEN}${CTX_SHIFT_STATUS}${NC}"
-echo -e "${BOLD}KV Cache Precision:${NC}  ${GREEN}${KV_QUANT} (-ctk ${KV_QUANT} -ctv ${KV_QUANT})${NC}"
+echo -e "${BOLD}KV Cache Precision:${NC}  ${GREEN}${KV_QUANT} (-ctk ${KV_QUANT} -ctv ${KV_QUANT}) | ${KV_UNIFIED_STATUS}${NC}"
 echo -e "${BOLD}GPU Offload:${NC}         ${GREEN}All 32 layers offloaded to GPU (-ngl ${GPU_LAYERS} -fa on)${NC}"
-echo -e "${BOLD}Batching:${NC}            ${GREEN}Continuous (-cb) | Chunked Prefill (-ub 1024, -b 2048)${NC}"
+echo -e "${BOLD}Batching:${NC}            ${GREEN}Continuous (-cb) | Chunked Prefill (-ub ${UBATCH_SIZE}, -b ${BATCH_SIZE})${NC}"
 echo -e "${BOLD}CPU Affinity:${NC}        ${GREEN}Pinned to 8 P-cores (--cpu-range 0-7, -t ${THREADS})${NC}"
 echo -e "${BOLD}Speculative Dec:${NC}     ${GREEN}${SPEC_STATUS}${NC}"
 echo -e "${BOLD}Thinking Mode:${NC}       ${GREEN}${THINKING_STATUS}${NC}"
@@ -357,8 +414,8 @@ exec "${SERVER_BIN}" \
     --port "${PORT}" \
     -c "${TOTAL_CTX}" \
     -np "${SLOTS}" \
-    -b 2048 \
-    -ub 1024 \
+    -b "${BATCH_SIZE}" \
+    -ub "${UBATCH_SIZE}" \
     -cb \
     -ctk "${KV_QUANT}" \
     -ctv "${KV_QUANT}" \
@@ -371,6 +428,7 @@ exec "${SERVER_BIN}" \
     --top-k "${TOP_K}" \
     --presence-penalty "${PRESENCE_PENALTY}" \
     "${CTX_SHIFT_ARGS[@]}" \
+    "${KV_UNIFIED_ARGS[@]}" \
     "${JINJA_ARGS[@]}" \
     "${REASONING_ARGS[@]}" \
     "${SPEC_ARGS[@]}" \
