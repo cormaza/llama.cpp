@@ -1,8 +1,8 @@
 #!/usr/bin/env bash
 # ==============================================================================
-# start-bonsai-27b.sh - Launcher for Ternary Bonsai 27B (Prism ML / Qwen3.6)
+# start-bonsai-2-27b.sh - Launcher for Ternary Bonsai 2 27B (Prism ML / Qwen3.8)
 # Hardware: AMD Radeon RX 9060 XT (16GB VRAM, ROCm / HIP gfx1200)
-# Features: True 1.71 bpw Ternary PQ2_0 + DSpark Speculative Drafter + Vision
+# Features: True 1.72 bpw Ternary (PQ2_0 / PTQ1_0) + Vision Multimodal Support
 # ==============================================================================
 
 set -euo pipefail
@@ -19,21 +19,17 @@ SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 BIN_DIR="${SCRIPT_DIR}/build-amd/bin"
 SERVER_BIN="${BIN_DIR}/llama-server"
 
-DEFAULT_MODEL="${SCRIPT_DIR}/models/Ternary-Bonsai-27B-PQ2_0.gguf"
-ALT_MODEL_G64="${SCRIPT_DIR}/models/Ternary-Bonsai-27B-Q2_g64.gguf"
-ALT_MODEL_Q2="${SCRIPT_DIR}/models/Ternary-Bonsai-27B-Q2_0.gguf"
-
-DEFAULT_DSPARK="${SCRIPT_DIR}/models/Ternary-Bonsai-27B-dspark-Q4_1.gguf"
-DEFAULT_DFLASH="${SCRIPT_DIR}/models/Ternary-Bonsai-27B-dflash-Q4_1.gguf"
-DEFAULT_MMPROJ="${SCRIPT_DIR}/models/Ternary-Bonsai-27B-mmproj-Q8_0.gguf"
+DEFAULT_MODEL="${SCRIPT_DIR}/models/Ternary-Bonsai-2-27B-PQ2_0.gguf"
+ALT_MODEL_PTQ="${SCRIPT_DIR}/models/Ternary-Bonsai-2-27B-PTQ1_0.gguf"
+DEFAULT_MMPROJ="${SCRIPT_DIR}/models/Ternary-Bonsai-2-27B-mmproj-Q8_0.gguf"
+ALT_MMPROJ_BF16="${SCRIPT_DIR}/models/Ternary-Bonsai-2-27B-mmproj-BF16.gguf"
 
 MODEL_PATH=""
-DSPARK_PATH=""
 MMPROJ_PATH=""
-ENABLE_DSPARK=1
 ENABLE_MMPROJ=1
 ENABLE_THINKING=1
 ENABLE_CTX_SHIFT=1
+ENABLE_KV_UNIFIED=0
 
 HOST="0.0.0.0"
 PORT=8080
@@ -46,8 +42,7 @@ CUSTOM_TOP_K=""
 CUSTOM_PRESENCE=""
 KV_QUANT="q4_0"
 CUSTOM_NGL=""
-ALIAS="bonsai-27b"
-ENABLE_KV_UNIFIED=0
+ALIAS="bonsai-2-27b,bonsai2,bonsai-2"
 THREADS=8
 
 # Helper function to parse human-readable token notation (e.g., 32k, 64k, 128k, 256k)
@@ -72,32 +67,30 @@ show_help() {
     cat << EOF
 Usage: $(basename "$0") [options]
 
-Starts llama-server for Ternary Bonsai 27B (Prism ML / Qwen3.6 Hybrid Attention)
-optimized for AMD Radeon RX 9060 XT (16GB VRAM, ROCm / HIP).
+Starts llama-server for Ternary Bonsai 2 27B (Prism ML / Qwen3.8 Hybrid Attention)
+optimized for AMD Radeon RX 9060 XT (16GB VRAM, ROCm / HIP gfx1200).
 
 Features:
-  - True 1.71 bits/weight ternary weights (PQ2_0, 7.17 GB)
-  - DSpark speculative-decoding drafter layer (1.34x decode speedup)
-  - Multimodal Vision Projector (mmproj HQQ 4-bit)
+  - True 1.72 bits/weight ternary weights (PQ2_0 7.21 GB or PTQ1_0 5.95 GB)
+  - 262K native context window with hybrid attention (~75% linear attention)
+  - Multimodal Vision Projector (mmproj Q8_0 0.63 GB)
   - 100% GPU Offload with Flash Attention & Q4_0 KV cache
 
 Options:
-  -m, --model PATH              Path to GGUF model (default: ./models/Ternary-Bonsai-27B-PQ2_0.gguf)
+  -m, --model PATH              Path to GGUF model (default: ./models/Ternary-Bonsai-2-27B-PQ2_0.gguf)
   -a, --alias NAMES             Model alias for API clients (default: ${ALIAS})
-  --dspark PATH                 Path to DSpark draft model (default: auto-detect)
-  --no-dspark                   Disable DSpark speculative decoding
   --mmproj PATH                 Path to multimodal vision projector (default: auto-detect)
   --no-mmproj                   Disable multimodal vision projector (enables context shifting)
   -c, --context, --total-ctx N  Total context size pool (supports 64k, 128k, 256k; up to 262144)
   --ctx-slot N                  Explicit context per slot override (e.g. 32k, 64k)
   --slots, -np N                Number of parallel slots (default: 1; use 2 or 4 for multi-agent)
   -kvu, --kv-unified            Enable dynamic unified KV cache pool shared across all slots
-  --thinking                    Enable reasoning mode (default; temp 0.7, top_p 0.95, top_k 20)
-  --no-thinking                 Disable reasoning mode (direct response mode)
-  --temp N                      Sampling temperature override (default: 0.7)
-  --top-p N                     Top-p sampling override (default: 0.95)
-  --top-k N                     Top-k sampling override (default: 20)
-  --presence-penalty N          Presence penalty override (default: 0.0)
+  --thinking                    Enable reasoning mode (default; temp 1.0, top_p 0.95, top_k 20)
+  --no-thinking                 Disable reasoning mode (direct response mode; temp 0.7, top_p 0.80, presence 1.5)
+  --temp N                      Sampling temperature override
+  --top-p N                     Top-p sampling override
+  --top-k N                     Top-k sampling override
+  --presence-penalty N          Presence penalty override
   -t, --threads N               Number of CPU threads (default: 8)
   --no-context-shift            Disable context shifting
   -p, --port PORT               HTTP server port (default: 8080)
@@ -107,11 +100,12 @@ Options:
   -h, --help                    Show this help message
 
 Examples:
-  ./start-bonsai-27b.sh                            # Full stack (Ternary + DSpark + Vision, 128k context)
-  ./start-bonsai-27b.sh -c 262144                  # Max 262k native context window
-  ./start-bonsai-27b.sh --no-mmproj                # Pure text mode with infinite context shifting
-  ./start-bonsai-27b.sh --slots 2 --ctx-slot 64k   # Dual-agent serving (64k context per slot)
-  ./start-bonsai-27b.sh -kvu -c 256k --slots 4     # Dynamic shared unified KV pool
+  ./start-bonsai-2-27b.sh                            # Full stack (Ternary Bonsai 2 + Vision, 128k context)
+  ./start-bonsai-2-27b.sh -c 262144                  # Max 262k native context window
+  ./start-bonsai-2-27b.sh --no-thinking              # Fast direct response mode without thinking
+  ./start-bonsai-2-27b.sh --no-mmproj                # Pure text mode with infinite context shifting
+  ./start-bonsai-2-27b.sh --slots 2 --ctx-slot 64k   # Dual-agent serving (64k context per slot)
+  ./start-bonsai-2-27b.sh -kvu -c 256k --slots 4     # Dynamic shared unified KV pool
 EOF
 }
 
@@ -124,14 +118,6 @@ while [[ $# -gt 0 ]]; do
         -a|--alias)
             ALIAS="$2"
             shift 2
-            ;;
-        --dspark)
-            DSPARK_PATH="$2"
-            shift 2
-            ;;
-        --no-dspark)
-            ENABLE_DSPARK=0
-            shift
             ;;
         --mmproj)
             MMPROJ_PATH="$2"
@@ -218,7 +204,7 @@ while [[ $# -gt 0 ]]; do
 done
 
 echo -e "${BOLD}${CYAN}======================================================${NC}"
-echo -e "${BOLD}${CYAN}  Ternary Bonsai 27B Server (ROCm / HIP Accelerated)  ${NC}"
+echo -e "${BOLD}${CYAN}  Ternary Bonsai 2 27B Server (ROCm / HIP Accelerated) ${NC}"
 echo -e "${BOLD}${CYAN}======================================================${NC}"
 
 # 1. Check binaries
@@ -232,17 +218,15 @@ fi
 if [[ -z "${MODEL_PATH}" ]]; then
     if [[ -f "${DEFAULT_MODEL}" ]]; then
         MODEL_PATH="${DEFAULT_MODEL}"
-    elif [[ -f "${ALT_MODEL_G64}" ]]; then
-        MODEL_PATH="${ALT_MODEL_G64}"
-    elif [[ -f "${ALT_MODEL_Q2}" ]]; then
-        MODEL_PATH="${ALT_MODEL_Q2}"
+    elif [[ -f "${ALT_MODEL_PTQ}" ]]; then
+        MODEL_PATH="${ALT_MODEL_PTQ}"
     else
-        FOUND_MODELS=($(find "${SCRIPT_DIR}/models" -maxdepth 1 -iname "*bonsai*.gguf" ! -iname "*mmproj*" ! -iname "*dspark*" 2>/dev/null || true))
+        FOUND_MODELS=($(find "${SCRIPT_DIR}/models" -maxdepth 1 \( -iname "*bonsai-2*.gguf" -o -iname "*bonsai*2*.gguf" \) ! -iname "*mmproj*" 2>/dev/null || true))
         if [[ ${#FOUND_MODELS[@]} -gt 0 ]]; then
             MODEL_PATH="${FOUND_MODELS[0]}"
         else
-            echo -e "${YELLOW}[WARN] No Bonsai-27B GGUF model found in ./models/${NC}"
-            echo -e "Run ${CYAN}./scripts/download-bonsai-27b.sh${NC} to download Ternary Bonsai 27B."
+            echo -e "${YELLOW}[WARN] No Bonsai 2 27B GGUF model found in ./models/${NC}"
+            echo -e "Run ${CYAN}./scripts/download-bonsai-2-27b.sh${NC} to download Ternary Bonsai 2 27B."
             exit 1
         fi
     fi
@@ -255,8 +239,10 @@ if [[ "${ENABLE_MMPROJ}" -eq 1 ]]; then
     if [[ -z "${MMPROJ_PATH}" ]]; then
         if [[ -f "${DEFAULT_MMPROJ}" ]]; then
             MMPROJ_PATH="${DEFAULT_MMPROJ}"
+        elif [[ -f "${ALT_MMPROJ_BF16}" ]]; then
+            MMPROJ_PATH="${ALT_MMPROJ_BF16}"
         else
-            DETECTED_MMPROJ=($(find "${SCRIPT_DIR}/models" -maxdepth 1 -iname "*bonsai*mmproj*.gguf" -o -iname "mmproj*bonsai*.gguf" 2>/dev/null || true))
+            DETECTED_MMPROJ=($(find "${SCRIPT_DIR}/models" -maxdepth 1 \( -iname "*bonsai-2*mmproj*.gguf" -o -iname "*bonsai*2*mmproj*.gguf" \) 2>/dev/null || true))
             if [[ ${#DETECTED_MMPROJ[@]} -gt 0 && -f "${DETECTED_MMPROJ[0]}" ]]; then
                 MMPROJ_PATH="${DETECTED_MMPROJ[0]}"
             fi
@@ -268,41 +254,14 @@ if [[ "${ENABLE_MMPROJ}" -eq 1 ]]; then
         MMPROJ_STATUS="Active ($(basename "${MMPROJ_PATH}"))"
         MMPROJ_ACTIVE=1
     else
-        MMPROJ_STATUS="Disabled (no projector found; run ./scripts/download-bonsai-27b.sh mmproj)"
+        MMPROJ_STATUS="Disabled (no projector found; run ./scripts/download-bonsai-2-27b.sh mmproj)"
     fi
 else
     MMPROJ_ARGS=("--no-mmproj")
     MMPROJ_STATUS="Disabled (--no-mmproj)"
 fi
 
-# 4. Speculative Decoding Configuration (DSpark / DFlash)
-DSPARK_ARGS=()
-DSPARK_STATUS="Disabled"
-if [[ "${ENABLE_DSPARK}" -eq 1 ]]; then
-    if [[ -z "${DSPARK_PATH}" ]]; then
-        if [[ -f "${DEFAULT_DFLASH}" ]]; then
-            DSPARK_PATH="${DEFAULT_DFLASH}"
-        elif [[ -f "${DEFAULT_DSPARK}" ]]; then
-            echo -e "${YELLOW}Converting legacy DSpark drafter to native dflash format...${NC}"
-            python3 "${SCRIPT_DIR}/gguf-py/gguf/scripts/gguf_dspark_to_dflash.py" --drop-shared-tensors "${DEFAULT_DSPARK}" "${MODEL_PATH}" "${DEFAULT_DFLASH}"
-            DSPARK_PATH="${DEFAULT_DFLASH}"
-        else
-            DETECTED_DFLASH=($(find "${SCRIPT_DIR}/models" -maxdepth 1 -iname "*bonsai*dflash*.gguf" 2>/dev/null || true))
-            if [[ ${#DETECTED_DFLASH[@]} -gt 0 && -f "${DETECTED_DFLASH[0]}" ]]; then
-                DSPARK_PATH="${DETECTED_DFLASH[0]}"
-            fi
-        fi
-    fi
-
-    if [[ -n "${DSPARK_PATH}" && -f "${DSPARK_PATH}" ]]; then
-        DSPARK_ARGS=("-md" "${DSPARK_PATH}" "-ngld" "99")
-        DSPARK_STATUS="Active ($(basename "${DSPARK_PATH}"), up to 1.7x speedup)"
-    else
-        DSPARK_STATUS="Disabled (no drafter found; run ./scripts/download-bonsai-27b.sh dspark)"
-    fi
-fi
-
-# 5. Context Calculation & VRAM Bounds
+# 4. Context Calculation & VRAM Bounds
 if [[ -n "${CUSTOM_CTX}" ]]; then
     CUSTOM_CTX="$(parse_tokens "${CUSTOM_CTX}")"
 fi
@@ -333,7 +292,7 @@ if [[ "${CTX_PER_SLOT}" -lt 1024 ]]; then
     TOTAL_CTX=$(( SLOTS * CTX_PER_SLOT ))
 fi
 
-# Bonsai 27B native max context is 262144. In 16GB VRAM, 262k is safe due to hybrid linear attention.
+# Bonsai 2 27B native max context is 262144. In 16GB VRAM, 262k is safe due to hybrid linear attention.
 MAX_SAFE_CTX=262144
 if [[ "${TOTAL_CTX}" -gt "${MAX_SAFE_CTX}" ]]; then
     echo -e "${YELLOW}[WARN] Total context (${TOTAL_CTX}) exceeds the 262k safe limit for 16GB VRAM.${NC}"
@@ -365,7 +324,7 @@ if [[ "${ENABLE_KV_UNIFIED}" -eq 1 ]]; then
     fi
 fi
 
-# 6. Context Shift
+# 5. Context Shift
 CTX_SHIFT_ARGS=()
 if [[ "${MMPROJ_ACTIVE}" -eq 1 ]]; then
     CTX_SHIFT_STATUS="Disabled (Multimodal active; pass --no-mmproj for infinite context shifting)"
@@ -376,10 +335,10 @@ else
     CTX_SHIFT_STATUS="Disabled"
 fi
 
-# 7. Sampling & Template Configuration
+# 6. Sampling & Template Configuration (Official Bonsai 2 Recommendations)
 JINJA_ARGS=("--jinja")
 if [[ "${ENABLE_THINKING}" -eq 1 ]]; then
-    TEMPERATURE="${CUSTOM_TEMP:-0.7}"
+    TEMPERATURE="${CUSTOM_TEMP:-1.0}"
     TOP_P="${CUSTOM_TOP_P:-0.95}"
     TOP_K="${CUSTOM_TOP_K:-20}"
     PRESENCE_PENALTY="${CUSTOM_PRESENCE:-0.0}"
@@ -389,7 +348,7 @@ if [[ "${ENABLE_THINKING}" -eq 1 ]]; then
     fi
     REASONING_ARGS=("--reasoning-format" "deepseek")
 else
-    TEMPERATURE="${CUSTOM_TEMP:-0.6}"
+    TEMPERATURE="${CUSTOM_TEMP:-0.7}"
     TOP_P="${CUSTOM_TOP_P:-0.80}"
     TOP_K="${CUSTOM_TOP_K:-20}"
     PRESENCE_PENALTY="${CUSTOM_PRESENCE:-1.5}"
@@ -403,8 +362,8 @@ fi
 GPU_LAYERS="${CUSTOM_NGL:-99}"
 
 echo -e "${BOLD}Model:${NC}               ${CYAN}${MODEL_PATH}${NC}"
-echo -e "${BOLD}Quantization:${NC}        ${GREEN}True 1.71 bpw Ternary (PQ2_0 / Q2_0_g128)${NC}"
-echo -e "${BOLD}DSpark Drafter:${NC}      ${GREEN}${DSPARK_STATUS}${NC}"
+echo -e "${BOLD}Architecture:${NC}        ${GREEN}Qwen3.8 Hybrid Attention (~75% linear / ~25% full attention)${NC}"
+echo -e "${BOLD}Quantization:${NC}        ${GREEN}True 1.72 bpw Ternary (PQ2_0 / PTQ1_0)${NC}"
 echo -e "${BOLD}Vision Projector:${NC}    ${GREEN}${MMPROJ_STATUS}${NC}"
 echo -e "${BOLD}API Model Alias:${NC}     ${GREEN}${ALIAS}${NC}"
 echo -e "${BOLD}Parallel Slots:${NC}      ${GREEN}${SLOTS} slot(s)${NC}"
@@ -450,5 +409,4 @@ exec "${SERVER_BIN}" \
     "${CTX_SHIFT_ARGS[@]}" \
     "${JINJA_ARGS[@]}" \
     "${REASONING_ARGS[@]}" \
-    "${DSPARK_ARGS[@]}" \
     "${MMPROJ_ARGS[@]}"
