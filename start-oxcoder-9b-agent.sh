@@ -397,6 +397,7 @@ echo -e "${BOLD}CPU Affinity:${NC}        ${GREEN}Pinned to 8 P-cores (--cpu-ran
 echo -e "${BOLD}Speculative Dec:${NC}     ${GREEN}${SPEC_STATUS}${NC}"
 echo -e "${BOLD}Thinking Mode:${NC}       ${GREEN}${THINKING_STATUS}${NC}"
 echo -e "${BOLD}Chat Template:${NC}       ${GREEN}Froggeric v21.3 Qwen-Fixed (--jinja enabled)${NC}"
+echo -e "${BOLD}Prometheus Metrics:${NC}  ${GREEN}Enabled (--metrics / GET /metrics)${NC}"
 echo -e "${BOLD}Sampling Params:${NC}     ${GREEN}temp ${TEMPERATURE} | top_p ${TOP_P} | top_k ${TOP_K} | presence ${PRESENCE_PENALTY}${NC}"
 echo -e "\n${BOLD}${YELLOW}=== Remote Connection Info (From another machine) ===${NC}"
 echo -e "  Web UI:            ${CYAN}http://${LOCAL_IP}:${PORT}${NC}"
@@ -406,12 +407,14 @@ echo -e "------------------------------------------------------\n"
 
 # Enable prompt and token stream exposure in /slots for monitor drill-down
 export LLAMA_SERVER_SLOTS_DEBUG=1
+export LLAMA_ARG_ENDPOINT_METRICS=1
 
 exec "${SERVER_BIN}" \
     -m "${MODEL_PATH}" \
     --alias "${ALIAS}" \
     --host "${HOST}" \
     --port "${PORT}" \
+    --metrics \
     -c "${TOTAL_CTX}" \
     -np "${SLOTS}" \
     -b "${BATCH_SIZE}" \

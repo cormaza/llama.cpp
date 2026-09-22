@@ -329,11 +329,13 @@ else
 
     # Enable prompt and token stream exposure in /slots for monitor drill-down
     export LLAMA_SERVER_SLOTS_DEBUG=1
+export LLAMA_ARG_ENDPOINT_METRICS=1
 
     exec "${SERVER_BIN}" \
         -hf "${HF_MODEL}" \
         --host "${HOST}" \
         --port "${PORT}" \
+    --metrics \
         -c "${TOTAL_CTX}" \
         -np "${SLOTS}" \
         -b "${BATCH_SIZE}" \
