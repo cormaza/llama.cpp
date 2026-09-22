@@ -65,7 +65,8 @@ case "${MODE}" in
         exec "${BIN_DIR}/llama-cli" "${AMD_BASE_ARGS[@]}" "$@"
         ;;
     server|llama-server)
-        exec "${BIN_DIR}/llama-server" "${AMD_BASE_ARGS[@]}" "$@"
+        export LLAMA_ARG_ENDPOINT_METRICS=1
+        exec "${BIN_DIR}/llama-server" "${AMD_BASE_ARGS[@]}" --metrics "$@"
         ;;
     bench|llama-bench)
         exec "${BIN_DIR}/llama-bench" "${AMD_BASE_ARGS[@]}" "$@"
