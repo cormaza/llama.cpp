@@ -477,12 +477,14 @@ echo -e "------------------------------------------------------\n"
 
 # Expose slot debug information
 export LLAMA_SERVER_SLOTS_DEBUG=1
+export LLAMA_ARG_ENDPOINT_METRICS=1
 
 exec "${SERVER_BIN}" \
     -m "${MODEL_PATH}" \
     --alias "${ALIAS}" \
     --host "${HOST}" \
     --port "${PORT}" \
+    --metrics \
     -c "${TOTAL_CTX}" \
     -np "${SLOTS}" \
     -b "${BATCH_SIZE}" \
