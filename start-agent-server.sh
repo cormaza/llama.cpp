@@ -313,6 +313,7 @@ echo -e "------------------------------------------------------\n"
 
 # Enable prompt and token stream exposure in /slots for monitor drill-down
 export LLAMA_SERVER_SLOTS_DEBUG=1
+export LLAMA_ARG_ENDPOINT_METRICS=1
 
 exec "${SERVER_BIN}" \
     -m "${MODEL_PATH}" \
@@ -320,6 +321,7 @@ exec "${SERVER_BIN}" \
     --jinja \
     --host "${HOST}" \
     --port "${PORT}" \
+    --metrics \
     -c "${TOTAL_CTX}" \
     -np "${SLOTS}" \
     -b "${BATCH_SIZE}" \
