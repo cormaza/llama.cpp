@@ -1,0 +1,1 @@
+download-qwen3.5-c3sm-9b.sh
