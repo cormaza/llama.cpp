@@ -15,15 +15,36 @@
 {%- for message in messages[offset:] -%}
     {{- '<|im_start|>' + message['role'] + '\n' -}}
     {%- if message['role'] == 'assistant' -%}
-        {%- if message.thinking is defined and message.thinking -%}
-            {{- '<thought>\n' + message.thinking + '\n</thought>\n' -}}
+        {%- set reasoning_content = '' -%}
+        {%- if message.reasoning_content is defined and message.reasoning_content -%}
+            {%- set reasoning_content = message.reasoning_content -%}
+        {%- elif message.thinking is defined and message.thinking -%}
+            {%- set reasoning_content = message.thinking -%}
+        {%- elif message.reasoning is defined and message.reasoning -%}
+            {%- set reasoning_content = message.reasoning -%}
+        {%- endif -%}
+        {%- if reasoning_content -%}
+            {{- '<thought>\n' + reasoning_content + '\n</thought>\n' -}}
         {%- endif -%}
         {%- if message.content is defined and message.content -%}
             {{- message.content -}}
         {%- endif -%}
         {%- if message.tool_calls is defined and message.tool_calls -%}
             {%- for tool_call in message.tool_calls -%}
-                {{- '\n<tool_call>\n' + (tool_call | tojson) + '\n</tool_call>' -}}
+                {%- if tool_call.function is defined -%}
+                    {%- set tool_name = tool_call.function.name -%}
+                    {%- set tool_args = tool_call.function.arguments -%}
+                {%- else -%}
+                    {%- set tool_name = tool_call.name -%}
+                    {%- set tool_args = tool_call.arguments -%}
+                {%- endif -%}
+                {{- '\n<tool_call>\n{"name": "' + tool_name + '", "arguments": ' -}}
+                {%- if tool_args is string -%}
+                    {{- tool_args -}}
+                {%- else -%}
+                    {{- (tool_args | tojson) -}}
+                {%- endif -%}
+                {{- '}\n</tool_call>' -}}
             {%- endfor -%}
         {%- endif -%}
         {{- '<|im_end|>\n' -}}
