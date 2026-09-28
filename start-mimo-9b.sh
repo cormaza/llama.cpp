@@ -17,7 +17,7 @@ NC='\033[0m'
 
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 BIN_DIR="${SCRIPT_DIR}/build-amd/bin"
-SERVER_BIN="${BIN_DIR}/llama-server"
+SERVER_BIN="${SERVER_BIN:-${BIN_DIR}/llama-server}"
 
 DEFAULT_MODEL="${SCRIPT_DIR}/models/MiMo-V2.6-Distill-Qwen-9B-Q4_K_M.gguf"
 ALT_MODEL_Q5="${SCRIPT_DIR}/models/MiMo-V2.6-Distill-Qwen-9B-Q5_K_M.gguf"
@@ -48,10 +48,28 @@ CUSTOM_NGL=""
 ALIAS="mimo-9b,mimo-v2.6-9b,mimo,qwen"
 THREADS=8
 
-# Helper function to parse human-readable token notation (e.g., 32k, 64k, 128k, 256k)
+# Helper function to parse human-readable token notation (e.g., 32k, 64k, 128k, 256k, 262k)
 parse_tokens() {
     local val="${1,,}"
     val="${val//[[:space:]]/}"
+    case "${val}" in
+        0)
+            echo 262144
+            return
+            ;;
+        262k|262144)
+            echo 262144
+            return
+            ;;
+        131k|131072)
+            echo 131072
+            return
+            ;;
+        65k|65536)
+            echo 65536
+            return
+            ;;
+    esac
     if [[ "${val}" =~ ^([0-9]+)k$ ]]; then
         echo $(( ${BASH_REMATCH[1]} * 1024 ))
     elif [[ "${val}" =~ ^([0-9]+)m$ ]]; then
@@ -60,6 +78,21 @@ parse_tokens() {
         echo "${val}"
     else
         echo "${val}"
+    fi
+}
+
+format_tokens_k() {
+    local n="$1"
+    if [[ "$n" -eq 262144 ]]; then
+        echo "262k"
+    elif [[ "$n" -eq 131072 ]]; then
+        echo "128k"
+    elif [[ "$n" -eq 65536 ]]; then
+        echo "64k"
+    elif [[ $(( n % 1024 )) -eq 0 ]]; then
+        echo "$(( n / 1024 ))k"
+    else
+        echo "${n}"
     fi
 }
 
@@ -85,9 +118,9 @@ Options:
   -a, --alias NAMES             Model alias for API clients (default: ${ALIAS})
   --mmproj PATH                 Path to multimodal vision projector (default: auto-detect)
   --no-mmproj                   Disable multimodal vision projector (enables context shifting)
-  -c, --context, --total-ctx N  Total context size pool (supports 64k, 128k, 256k; up to 262144)
-  --ctx-slot N                  Explicit context per slot override (e.g. 32k, 64k)
-  --slots, -np N                Number of parallel agent slots (default: 1; use 2 or 4 for multi-agent)
+  -c, --context, --ctx-size, --total-ctx N  Total context pool across all slots (supports 64k, 128k, 256k, 262k; default: 262k)
+  --ctx-slot N                  Explicit context per slot override (e.g. 32k, 64k, 128k)
+  --slots, -np, --parallel N    Number of parallel agent slots (default: 1; use 2 or 4 for multi-agent)
   -kvu, --kv-unified            Enable dynamic unified KV cache pool shared across all slots
   --thinking                    Enable reasoning mode (default; temp 0.6, top_p 0.95, top_k 20)
   --no-thinking                 Disable reasoning mode (direct response mode; temp 0.7, top_p 0.80, presence 1.5)
@@ -97,6 +130,7 @@ Options:
   --top-k N                     Top-k sampling override
   --presence-penalty N          Presence penalty override
   -t, --threads N               Number of CPU threads (default: 8)
+  --context-shift               Enable context shifting
   --no-context-shift            Disable context shifting
   -p, --port PORT               HTTP server port (default: 8080)
   --host HOST                   Host address to bind (default: 0.0.0.0)
@@ -105,8 +139,8 @@ Options:
   -h, --help                    Show this help message
 
 Examples:
-  ./start-mimo-9b.sh                            # Full stack with reasoning (128k context)
-  ./start-mimo-9b.sh -c 262144                  # Max 262k native context window
+  ./start-mimo-9b.sh                            # Full stack with reasoning (262k native context)
+  ./start-mimo-9b.sh -c 128k                    # Conservative 128k context pool
   ./start-mimo-9b.sh --no-thinking              # Fast direct response mode without thinking
   ./start-mimo-9b.sh --template qwen            # Use Qwen-Fixed template for OpenAI JSON tool calling
   ./start-mimo-9b.sh --no-mmproj                # Pure text mode with infinite context shifting
@@ -133,21 +167,33 @@ while [[ $# -gt 0 ]]; do
             ENABLE_MMPROJ=0
             shift
             ;;
-        -c|--context|--ctx|--total-ctx|--total-context)
+        -c|--context|--ctx|--ctx-size|--context-size|--total-ctx|--total-context)
             CUSTOM_CTX="$2"
             shift 2
             ;;
-        --ctx-slot|--slot-ctx|--context-slot)
+        -c=*|--context=*|--ctx=*|--ctx-size=*|--context-size=*|--total-ctx=*|--total-context=*)
+            CUSTOM_CTX="${1#*=}"
+            shift
+            ;;
+        --ctx-slot|--slot-ctx|--context-slot|--ctx-per-slot|--slot-context)
             CUSTOM_CTX_SLOT="$2"
             shift 2
+            ;;
+        --ctx-slot=*|--slot-ctx=*|--context-slot=*|--ctx-per-slot=*|--slot-context=*)
+            CUSTOM_CTX_SLOT="${1#*=}"
+            shift
             ;;
         -kvu|--kv-unified)
             ENABLE_KV_UNIFIED=1
             shift
             ;;
-        --slots|-np)
+        --slots|-np|--parallel)
             SLOTS="$2"
             shift 2
+            ;;
+        --slots=*|-np=*|--parallel=*)
+            SLOTS="${1#*=}"
+            shift
             ;;
         --thinking)
             ENABLE_THINKING=1
@@ -180,6 +226,10 @@ while [[ $# -gt 0 ]]; do
         -t|--threads)
             THREADS="$2"
             shift 2
+            ;;
+        --context-shift)
+            ENABLE_CTX_SHIFT=1
+            shift
             ;;
         --no-context-shift)
             ENABLE_CTX_SHIFT=0
@@ -290,9 +340,6 @@ elif [[ -n "${CUSTOM_CTX_SLOT}" ]]; then
 elif [[ -n "${CUSTOM_CTX}" ]]; then
     TOTAL_CTX="${CUSTOM_CTX}"
     CTX_PER_SLOT=$(( TOTAL_CTX / SLOTS ))
-elif [[ "${SLOTS}" -le 2 ]]; then
-    CTX_PER_SLOT=131072
-    TOTAL_CTX=$(( SLOTS * CTX_PER_SLOT ))
 else
     TOTAL_CTX=262144
     CTX_PER_SLOT=$(( TOTAL_CTX / SLOTS ))
@@ -307,10 +354,8 @@ fi
 # MiMo-V2.6 native max context is 262144. In 16GB VRAM, 262k is safe due to hybrid linear attention.
 MAX_SAFE_CTX=262144
 if [[ "${TOTAL_CTX}" -gt "${MAX_SAFE_CTX}" ]]; then
-    echo -e "${YELLOW}[WARN] Total context (${TOTAL_CTX}) exceeds the 262k safe limit for 16GB VRAM.${NC}"
-    echo -e "${YELLOW}[WARN] Capping total context to ${MAX_SAFE_CTX} ($(( MAX_SAFE_CTX / SLOTS )) per slot) to avoid Out-Of-Memory crashes.${NC}"
-    TOTAL_CTX="${MAX_SAFE_CTX}"
-    CTX_PER_SLOT=$(( TOTAL_CTX / SLOTS ))
+    echo -e "${YELLOW}[WARN] Total context (${TOTAL_CTX} tokens) exceeds the 262k safe limit for 16GB VRAM.${NC}"
+    echo -e "${YELLOW}[WARN] Ensure you have sufficient RAM or adjust offload layers if running near limits.${NC}"
 fi
 
 # Dynamic batch sizes: clamp batch size to total context if context is small
@@ -428,8 +473,8 @@ echo -e "${BOLD}Architecture:${NC}        ${GREEN}Qwen3.5 9B Hybrid Linear Atten
 echo -e "${BOLD}Vision Projector:${NC}    ${GREEN}${MMPROJ_STATUS}${NC}"
 echo -e "${BOLD}API Model Alias:${NC}     ${GREEN}${ALIAS}${NC}"
 echo -e "${BOLD}Parallel Slots:${NC}      ${GREEN}${SLOTS} slot(s)${NC}"
-echo -e "${BOLD}Context per Slot:${NC}    ${GREEN}${CTX_PER_SLOT} tokens ($(( CTX_PER_SLOT / 1024 ))k tokens)${NC}"
-echo -e "${BOLD}Total Context Pool:${NC}  ${GREEN}${TOTAL_CTX} tokens ($(( TOTAL_CTX / 1024 ))k tokens)${NC}"
+echo -e "${BOLD}Context per Slot:${NC}    ${GREEN}${CTX_PER_SLOT} tokens ($(format_tokens_k "${CTX_PER_SLOT}") tokens)${NC}"
+echo -e "${BOLD}Total Context Pool:${NC}  ${GREEN}${TOTAL_CTX} tokens ($(format_tokens_k "${TOTAL_CTX}") tokens)${NC}"
 echo -e "${BOLD}KV Cache Pool:${NC}       ${GREEN}${KV_UNIFIED_STATUS}${NC}"
 echo -e "${BOLD}Context Shift:${NC}       ${GREEN}${CTX_SHIFT_STATUS}${NC}"
 echo -e "${BOLD}KV Cache Precision:${NC}  ${GREEN}${KV_QUANT} (-ctk ${KV_QUANT} -ctv ${KV_QUANT})${NC}"
