@@ -18,6 +18,8 @@ BIN_DIR="${SCRIPT_DIR}/build-amd/bin"
 SERVER_BIN="${BIN_DIR}/llama-server"
 
 DEFAULT_MODEL="${SCRIPT_DIR}/models/K2-Horizon-7B-Q4_K_M.gguf"
+ALT_MODEL_Q6="${SCRIPT_DIR}/models/K2-Horizon-7B-Q6_K.gguf"
+ALT_MODEL_Q5="${SCRIPT_DIR}/models/K2-Horizon-7B-Q5_K_M.gguf"
 ALT_MODEL_IQ3="${SCRIPT_DIR}/models/K2-Horizon-7B-IQ3_XXS.gguf"
 ALT_MODEL_Q8="${SCRIPT_DIR}/models/K2-Horizon-7B-Q8_0.gguf"
 MODEL_PATH=""
@@ -170,25 +172,35 @@ fi
 if [[ -z "${MODEL_PATH}" ]]; then
     if [[ -f "${DEFAULT_MODEL}" ]]; then
         MODEL_PATH="${DEFAULT_MODEL}"
+    elif [[ -f "${ALT_MODEL_Q6}" ]]; then
+        MODEL_PATH="${ALT_MODEL_Q6}"
+    elif [[ -f "${ALT_MODEL_Q5}" ]]; then
+        MODEL_PATH="${ALT_MODEL_Q5}"
     elif [[ -f "${ALT_MODEL_IQ3}" ]]; then
         MODEL_PATH="${ALT_MODEL_IQ3}"
     elif [[ -f "${ALT_MODEL_Q8}" ]]; then
         MODEL_PATH="${ALT_MODEL_Q8}"
     else
         FOUND_MODELS=($(find "${SCRIPT_DIR}/models" -maxdepth 1 -iname "*horizon*.gguf" 2>/dev/null || true))
-        if [[ ${#FOUND_MODELS[@]} -gt 0 ]]; then
-            echo -e "\nSelect a model from ./models/:"
-            select opt in "${FOUND_MODELS[@]}" "Descargar K2-Horizon" "Salir"; do
-                if [[ -n "${opt}" && -f "${opt}" ]]; then
-                    MODEL_PATH="${opt}"
-                    break
-                elif [[ "${opt}" == "Descargar K2-Horizon" ]]; then
-                    ./scripts/download-k2-horizon.sh
-                    exit 0
-                else
-                    exit 1
-                fi
-            done
+        if [[ ${#FOUND_MODELS[@]} -eq 1 ]]; then
+            MODEL_PATH="${FOUND_MODELS[0]}"
+        elif [[ ${#FOUND_MODELS[@]} -gt 1 ]]; then
+            if [[ -t 0 ]]; then
+                echo -e "\nSelect a model from ./models/:"
+                select opt in "${FOUND_MODELS[@]}" "Descargar K2-Horizon" "Salir"; do
+                    if [[ -n "${opt}" && -f "${opt}" ]]; then
+                        MODEL_PATH="${opt}"
+                        break
+                    elif [[ "${opt}" == "Descargar K2-Horizon" ]]; then
+                        ./scripts/download-k2-horizon.sh
+                        exit 0
+                    else
+                        exit 1
+                    fi
+                done
+            else
+                MODEL_PATH="${FOUND_MODELS[0]}"
+            fi
         else
             echo -e "${YELLOW}[WARN] No K2-Horizon GGUF model found in ./models/${NC}"
             echo -e "Run ${CYAN}./scripts/download-k2-horizon.sh${NC} to download K2-Horizon-7B."
