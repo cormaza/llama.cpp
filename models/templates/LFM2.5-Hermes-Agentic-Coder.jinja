@@ -1,0 +1,38 @@
+{{- bos_token -}}
+{%- if messages[0]['role'] == 'system' -%}
+    {{- '<|im_start|>system\n' + messages[0]['content'] -}}
+    {%- if tools is defined and tools -%}
+        {{- '\n<tools>\n' + (tools | tojson) + '\n</tools>' -}}
+    {%- endif -%}
+    {{- '<|im_end|>\n' -}}
+    {%- set offset = 1 -%}
+{%- else -%}
+    {%- if tools is defined and tools -%}
+        {{- '<|im_start|>system\nYou are a helpful assistant with tool calling capabilities. When you need to call a tool, respond with a <tool_call> block.\n<tools>\n' + (tools | tojson) + '\n</tools><|im_end|>\n' -}}
+    {%- endif -%}
+    {%- set offset = 0 -%}
+{%- endif -%}
+{%- for message in messages[offset:] -%}
+    {{- '<|im_start|>' + message['role'] + '\n' -}}
+    {%- if message['role'] == 'assistant' -%}
+        {%- if message.thinking is defined and message.thinking -%}
+            {{- '<thought>\n' + message.thinking + '\n</thought>\n' -}}
+        {%- endif -%}
+        {%- if message.content is defined and message.content -%}
+            {{- message.content -}}
+        {%- endif -%}
+        {%- if message.tool_calls is defined and message.tool_calls -%}
+            {%- for tool_call in message.tool_calls -%}
+                {{- '\n<tool_call>\n' + (tool_call | tojson) + '\n</tool_call>' -}}
+            {%- endfor -%}
+        {%- endif -%}
+        {{- '<|im_end|>\n' -}}
+    {%- elif message['role'] == 'tool' -%}
+        {{- '<tool_response>\n' + message['content'] + '\n</tool_response><|im_end|>\n' -}}
+    {%- else -%}
+        {{- message['content'] + '<|im_end|>\n' -}}
+    {%- endif -%}
+{%- endfor -%}
+{%- if add_generation_prompt -%}
+    {{- '<|im_start|>assistant\n' -}}
+{%- endif -%}
