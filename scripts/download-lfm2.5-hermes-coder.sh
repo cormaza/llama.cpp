@@ -1,0 +1,1 @@
+download-lfm2.5-8b.sh
