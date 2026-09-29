@@ -323,6 +323,14 @@ if [[ -z "${MODEL_PATH}" ]]; then
     elif [[ -f "${ALT_MODEL_Q2}" ]]; then
         MODEL_PATH="${ALT_MODEL_Q2}"
     else
+        # Also check for Huihui abliterated models if present
+        huihui_match="$(find "${SCRIPT_DIR}/models" -maxdepth 1 -name "Huihui-gemma-4-12B-coder*.gguf" | head -n 1)"
+        if [[ -n "${huihui_match}" && -f "${huihui_match}" ]]; then
+            MODEL_PATH="${huihui_match}"
+        fi
+    fi
+
+    if [[ -z "${MODEL_PATH}" ]]; then
         echo -e "${YELLOW}[WARN] No Gemma4-12B-Coder model found in ./models/${NC}"
         echo -e "You can download it with:"
         echo -e "  ${CYAN}./scripts/download-gemma4-coder.sh${NC}\n"
