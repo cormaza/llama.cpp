@@ -202,7 +202,7 @@ if [[ -z "${MODEL_PATH}" ]]; then
     elif [[ -f "${Q8_MODEL}" ]]; then
         MODEL_PATH="${Q8_MODEL}"
     else
-        FOUND_MODELS=($(find "${SCRIPT_DIR}/models" -maxdepth 1 -iname "*ornith*.gguf" ! -iname "mmproj*" ! -iname "*head*" 2>/dev/null || true))
+        FOUND_MODELS=($(find "${SCRIPT_DIR}/models" -maxdepth 1 -iname "*ornith*.gguf" ! -iname "*mmproj*" ! -iname "*head*" 2>/dev/null || true))
         if [[ ${#FOUND_MODELS[@]} -gt 0 ]]; then
             echo -e "\nFound existing Ornith models in ./models/:"
             select opt in "${FOUND_MODELS[@]}" "Descargar Ornith 1.5 9B" "Salir"; do
@@ -284,8 +284,12 @@ fi
 MTP_STATUS="Disabled"
 MTP_ARGS=()
 if [[ "${ENABLE_MTP}" -eq 1 ]]; then
-    MTP_STATUS="Active (Built-in MTP Head, draft_n_max=${DRAFT_N_MAX})"
-    MTP_ARGS+=("--spec-type" "draft-mtp" "--spec-draft-n-max" "${DRAFT_N_MAX}")
+    if [[ "${MODEL_PATH,,}" =~ mtp ]]; then
+        MTP_STATUS="Active (Built-in MTP Head, draft_n_max=${DRAFT_N_MAX})"
+        MTP_ARGS+=("--spec-type" "draft-mtp" "--spec-draft-n-max" "${DRAFT_N_MAX}")
+    else
+        MTP_STATUS="Disabled (Model has no built-in MTP weights; use --mtp only with MTP GGUFs)"
+    fi
 fi
 
 CTX_SHIFT_ARGS=()

@@ -1,9 +1,9 @@
 #!/usr/bin/env bash
 # ==============================================================================
-# start-gemma4-coder.sh - Launcher for Gemma4-12B-Coder (Composer 2.5 x Fable 5)
-# Model: https://huggingface.co/yuxinlu1/gemma-4-12B-coder-fable5-composer2.5-v1-GGUF
+# start-huihui-ornith-9b.sh - Launcher for Huihui-Ornith-1.5-9B-Abliterated
+# Model: https://huggingface.co/mradermacher/Huihui-Ornith-1.5-9B-abliterated-GGUF
+# Base: huihui-ai/Huihui-Ornith-1.5-9B-abliterated (Uncensored Ornith-1.5-9B)
 # Hardware: AMD Radeon RX 9060 XT (16GB VRAM, ROCm / HIP gfx1200)
-# Features: Google Gemma 4 12B + Composer 2.5 & Fable 5 Verifiable CoT Coding
 # ==============================================================================
 
 set -euo pipefail
@@ -20,15 +20,20 @@ SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 BIN_DIR="${SCRIPT_DIR}/build-amd/bin"
 SERVER_BIN="${SERVER_BIN:-${BIN_DIR}/llama-server}"
 
-DEFAULT_MODEL="${SCRIPT_DIR}/models/gemma4-coding-Q4_K_M.gguf"
-ALT_MODEL_Q6="${SCRIPT_DIR}/models/gemma4-coding-Q6_K.gguf"
-ALT_MODEL_Q8="${SCRIPT_DIR}/models/gemma4-coding-Q8_0.gguf"
-ALT_MODEL_Q3="${SCRIPT_DIR}/models/gemma4-coding-Q3_K_M.gguf"
-ALT_MODEL_Q2="${SCRIPT_DIR}/models/gemma4-coding-Q2_K.gguf"
+DEFAULT_MODEL="${SCRIPT_DIR}/models/Huihui-Ornith-1.5-9B-abliterated.Q4_K_M.gguf"
+ALT_MODEL_Q5="${SCRIPT_DIR}/models/Huihui-Ornith-1.5-9B-abliterated.Q5_K_M.gguf"
+ALT_MODEL_Q6="${SCRIPT_DIR}/models/Huihui-Ornith-1.5-9B-abliterated.Q6_K.gguf"
+ALT_MODEL_Q8="${SCRIPT_DIR}/models/Huihui-Ornith-1.5-9B-abliterated.Q8_0.gguf"
+ALT_MODEL_IQ4="${SCRIPT_DIR}/models/Huihui-Ornith-1.5-9B-abliterated.IQ4_XS.gguf"
+ALT_MODEL_Q3="${SCRIPT_DIR}/models/Huihui-Ornith-1.5-9B-abliterated.Q3_K_M.gguf"
+
+DEFAULT_MMPROJ="${SCRIPT_DIR}/models/Huihui-Ornith-1.5-9B-abliterated.mmproj-Q8_0.gguf"
+MMPROJ_PATH=""
+ENABLE_MMPROJ=1
 
 MODEL_PATH=""
 ENABLE_THINKING=1
-TEMPLATE_CHOICE="gemma4"
+TEMPLATE_CHOICE="qwen"
 ENABLE_CTX_SHIFT=1
 ENABLE_KV_UNIFIED=0
 
@@ -43,7 +48,7 @@ CUSTOM_TOP_K=""
 CUSTOM_PRESENCE=""
 KV_QUANT="q4_0"
 CUSTOM_NGL=""
-ALIAS="gemma-4-coder,gemma4-coder,gemma4-12b-coder,gemma-4,gemma-coder,gemma"
+ALIAS="huihui-ornith-1.5-9b,ornith-1.5-9b-abliterated,ornith-abliterated,ornith,qwen"
 THREADS=8
 
 # Helper function to parse human-readable token notation (e.g., 32k, 64k, 128k, 256k)
@@ -52,7 +57,7 @@ parse_tokens() {
     val="${val//[[:space:]]/}"
     case "${val}" in
         0)
-            echo 262144
+            echo 131072
             return
             ;;
         256k|262144)
@@ -113,38 +118,47 @@ show_help() {
     cat << EOF
 Usage: $(basename "$0") [options]
 
-Launcher for Gemma4-12B-Coder (Composer 2.5 x Fable 5 CoT Distillation)
+Launcher for Huihui-Ornith-1.5-9B-Abliterated (Uncensored Ornith-1.5-9B)
 Optimized for AMD Radeon RX 9060 XT (16GB VRAM, ROCm/HIP gfx1200)
+
+Features:
+  - 100% GPU offload on RX 9060 XT (Flash Attention enabled)
+  - 128K native context window with Q4_0 KV Cache
+  - Reasoning mode with DeepSeek <think>...</think> tags and Qwen-Fixed template
+  - Continuous context shift for multi-turn agent execution
+  - Optional Multimodal Vision Projector (mmproj) support
 
 Options:
   -m, --model PATH              Path to GGUF model (default: auto-detected in models/)
   -a, --alias NAMES             Comma-separated model aliases for API clients
-  -c, --context, --total-ctx N  Total context pool across all slots (default: 64k; supports 32k, 64k, 128k, 256k)
+  -c, --context, --total-ctx N  Total context pool across all slots (default: 128k; supports 32k, 64k, 128k, 256k)
   --ctx-slot N                  Context per slot (e.g. 32k, 64k; total = slots * ctx_slot)
   --slots, -np N                Number of parallel agent slots (default: 1; use 2 or 4 for multi-agent)
   -kvu, --kv-unified            Enable dynamic unified KV cache pool shared across all slots
-  --thinking                    Enable native Gemma 4 thinking channel (default: active, temp 1.0, top-k 64)
-  --no-thinking                 Disable thinking mode (fast direct code generation, temp 0.2)
-  --template NAME|PATH          Chat template: 'gemma4' (default), 'native', or custom .jinja file
-  --temp N                      Sampling temperature (default: 1.0 with thinking, 0.2 without)
-  --top-p N                     Top-p sampling (default: 0.95)
-  --top-k N                     Top-k sampling (default: 64 with thinking, 20 without)
-  --presence-penalty N          Presence penalty (default: 0.0)
+  --thinking                    Enable reasoning mode (default: active, temp 0.6, top_p 0.95, top_k 20)
+  --no-thinking                 Disable reasoning mode (direct agent mode, temp 0.7, top_p 0.80, presence 1.5)
+  --template NAME|PATH          Chat template: 'qwen' (default Froggeric Fixed), 'native', or custom .jinja
+  --mmproj PATH                 Path to vision projector (default: auto-detect if present)
+  --no-mmproj                   Disable multimodal vision projector
+  --temp N                      Sampling temperature override
+  --top-p N                     Top-p sampling override
+  --top-k N                     Top-k sampling override
+  --presence-penalty N          Presence penalty override
   --kv-quant QUANT              KV cache quantization (default: q4_0; options: q8_0, f16)
   --ngl N                       Number of GPU offloaded layers (default: 99 for full offload)
   -t, --threads N               Number of CPU threads (default: 8)
+  --context-shift               Enable continuous context shifting (default: enabled when no mmproj)
   --no-context-shift            Disable continuous context shifting
   -p, --port PORT               HTTP server port (default: 8080)
   --host HOST                   Host address to bind (default: 0.0.0.0)
   -h, --help                    Show this help message
 
 Examples:
-  ./start-gemma4-coder.sh                           # 1 slot x 64k context with thinking (temp 1.0)
-  ./start-gemma4-coder.sh -c 128k                   # 1 slot x 128k deep context
-  ./start-gemma4-coder.sh -c 256k                   # 1 slot x 256k maximum native context
-  ./start-gemma4-coder.sh --no-thinking             # Fast direct code execution mode (temp 0.2)
-  ./start-gemma4-coder.sh --slots 2 --ctx-slot 32k  # Dual-agent serving (32k context per slot)
-  ./start-gemma4-coder.sh -kvu -c 128k --slots 4    # Dynamic shared unified KV pool
+  ./start-huihui-ornith-9b.sh                           # 1 slot x 128k context with reasoning (temp 0.6)
+  ./start-huihui-ornith-9b.sh --no-thinking             # Fast direct agent mode (temp 0.7)
+  ./start-huihui-ornith-9b.sh --slots 2 --ctx-slot 64k  # Dual-agent serving (64k context per slot)
+  ./start-huihui-ornith-9b.sh -kvu -c 128k --slots 4    # Dynamic shared unified KV pool
+  ./start-huihui-ornith-9b.sh --no-mmproj               # Force text-only mode with context shifting
 EOF
 }
 
@@ -210,6 +224,20 @@ while [[ $# -gt 0 ]]; do
             TEMPLATE_CHOICE="${1#*=}"
             shift
             ;;
+        --mmproj)
+            MMPROJ_PATH="$2"
+            ENABLE_MMPROJ=1
+            shift 2
+            ;;
+        --mmproj=*)
+            MMPROJ_PATH="${1#*=}"
+            ENABLE_MMPROJ=1
+            shift
+            ;;
+        --no-mmproj)
+            ENABLE_MMPROJ=0
+            shift
+            ;;
         --temp|--temperature)
             CUSTOM_TEMP="$2"
             shift 2
@@ -266,6 +294,10 @@ while [[ $# -gt 0 ]]; do
             THREADS="${1#*=}"
             shift
             ;;
+        --context-shift)
+            ENABLE_CTX_SHIFT=1
+            shift
+            ;;
         --no-context-shift)
             ENABLE_CTX_SHIFT=0
             shift
@@ -298,10 +330,10 @@ while [[ $# -gt 0 ]]; do
     esac
 done
 
-echo -e "${BOLD}${CYAN}======================================================${NC}"
-echo -e "${BOLD}${CYAN}  Gemma4-12B-Coder Server (ROCm / HIP gfx1200)        ${NC}"
-echo -e "${BOLD}${CYAN}  Google Gemma 4 12B + Composer 2.5 & Fable 5 CoT     ${NC}"
-echo -e "${BOLD}${CYAN}======================================================${NC}"
+echo -e "${BOLD}${CYAN}===================================================================${NC}"
+echo -e "${BOLD}${CYAN}  Huihui-Ornith-1.5-9B-Abliterated Server (ROCm / HIP gfx1200)      ${NC}"
+echo -e "${BOLD}${CYAN}  Uncensored Ornith 1.5 9B with 128k Native Context                ${NC}"
+echo -e "${BOLD}${CYAN}===================================================================${NC}"
 
 # 1. Binary check
 if [[ ! -x "${SERVER_BIN}" ]]; then
@@ -314,33 +346,32 @@ fi
 if [[ -z "${MODEL_PATH}" ]]; then
     if [[ -f "${DEFAULT_MODEL}" ]]; then
         MODEL_PATH="${DEFAULT_MODEL}"
+    elif [[ -f "${ALT_MODEL_Q5}" ]]; then
+        MODEL_PATH="${ALT_MODEL_Q5}"
     elif [[ -f "${ALT_MODEL_Q6}" ]]; then
         MODEL_PATH="${ALT_MODEL_Q6}"
     elif [[ -f "${ALT_MODEL_Q8}" ]]; then
         MODEL_PATH="${ALT_MODEL_Q8}"
+    elif [[ -f "${ALT_MODEL_IQ4}" ]]; then
+        MODEL_PATH="${ALT_MODEL_IQ4}"
     elif [[ -f "${ALT_MODEL_Q3}" ]]; then
         MODEL_PATH="${ALT_MODEL_Q3}"
-    elif [[ -f "${ALT_MODEL_Q2}" ]]; then
-        MODEL_PATH="${ALT_MODEL_Q2}"
     else
-        # Also check for Huihui abliterated models if present
-        huihui_match="$(find "${SCRIPT_DIR}/models" -maxdepth 1 -name "Huihui-gemma-4-12B-coder*.gguf" | head -n 1)"
-        if [[ -n "${huihui_match}" && -f "${huihui_match}" ]]; then
-            MODEL_PATH="${huihui_match}"
-        fi
-    fi
-
-    if [[ -z "${MODEL_PATH}" ]]; then
-        echo -e "${YELLOW}[WARN] No Gemma4-12B-Coder model found in ./models/${NC}"
-        echo -e "You can download it with:"
-        echo -e "  ${CYAN}./scripts/download-gemma4-coder.sh${NC}\n"
-        read -rp "Would you like to download it now? [y/N]: " RUN_DL
-        if [[ "${RUN_DL}" =~ ^[Yy]$ ]]; then
-            "${SCRIPT_DIR}/scripts/download-gemma4-coder.sh"
-            MODEL_PATH="${DEFAULT_MODEL}"
+        DETECTED_MODELS=($(find "${SCRIPT_DIR}/models" -maxdepth 1 -iname "*ornith*abliterated*.gguf" ! -iname "*mmproj*" 2>/dev/null || true))
+        if [[ ${#DETECTED_MODELS[@]} -gt 0 && -f "${DETECTED_MODELS[0]}" ]]; then
+            MODEL_PATH="${DETECTED_MODELS[0]}"
         else
-            echo -e "${RED}[ERROR] Model file required to proceed.${NC}"
-            exit 1
+            echo -e "${YELLOW}[WARN] No Huihui-Ornith-1.5-9B-Abliterated model found in ./models/${NC}"
+            echo -e "You can download it with:"
+            echo -e "  ${CYAN}./scripts/download-huihui-ornith-9b.sh${NC}\n"
+            read -rp "Would you like to download it now? [y/N]: " RUN_DL
+            if [[ "${RUN_DL}" =~ ^[Yy]$ ]]; then
+                "${SCRIPT_DIR}/scripts/download-huihui-ornith-9b.sh"
+                MODEL_PATH="${DEFAULT_MODEL}"
+            else
+                echo -e "${RED}[ERROR] Model file required to proceed.${NC}"
+                exit 1
+            fi
         fi
     fi
 fi
@@ -368,8 +399,8 @@ elif [[ -n "${CUSTOM_CTX}" ]]; then
     TOTAL_CTX="${CUSTOM_CTX}"
     CTX_PER_SLOT=$(( TOTAL_CTX / SLOTS ))
 else
-    # Default: 65536 (64k) tokens distributed across slots
-    TOTAL_CTX=65536
+    # Default: 131072 (128k) tokens distributed across slots
+    TOTAL_CTX=131072
     CTX_PER_SLOT=$(( TOTAL_CTX / SLOTS ))
 fi
 
@@ -379,9 +410,9 @@ if [[ "${CTX_PER_SLOT}" -lt 2048 ]]; then
     TOTAL_CTX=$(( SLOTS * CTX_PER_SLOT ))
 fi
 
-MAX_NATIVE_CTX=262144
+MAX_NATIVE_CTX=131072
 if [[ "${TOTAL_CTX}" -gt "${MAX_NATIVE_CTX}" ]]; then
-    echo -e "${YELLOW}[WARN] Total context (${TOTAL_CTX} tokens) exceeds 256k native context limit.${NC}"
+    echo -e "${YELLOW}[WARN] Total context (${TOTAL_CTX} tokens) exceeds 128k native context limit.${NC}"
 fi
 
 # Dynamic batch sizes
@@ -407,31 +438,58 @@ if [[ "${ENABLE_KV_UNIFIED}" -eq 1 ]]; then
     fi
 fi
 
-# 4. Context Shift
+# 4. Multimodal Projector Configuration
+MMPROJ_ARGS=()
+MMPROJ_STATUS="Disabled"
+MMPROJ_ACTIVE=0
+if [[ "${ENABLE_MMPROJ}" -eq 1 ]]; then
+    if [[ -z "${MMPROJ_PATH}" ]]; then
+        if [[ -f "${DEFAULT_MMPROJ}" ]]; then
+            MMPROJ_PATH="${DEFAULT_MMPROJ}"
+        else
+            DETECTED_MMPROJ=($(find "${SCRIPT_DIR}/models" -maxdepth 1 -iname "*ornith*mmproj*.gguf" -o -iname "mmproj*ornith*.gguf" 2>/dev/null || true))
+            if [[ ${#DETECTED_MMPROJ[@]} -gt 0 && -f "${DETECTED_MMPROJ[0]}" ]]; then
+                MMPROJ_PATH="${DETECTED_MMPROJ[0]}"
+            fi
+        fi
+    fi
+
+    if [[ -n "${MMPROJ_PATH}" && -f "${MMPROJ_PATH}" ]]; then
+        MMPROJ_ARGS=("--mmproj" "${MMPROJ_PATH}" "--image-min-tokens" "1024")
+        MMPROJ_STATUS="Active ($(basename "${MMPROJ_PATH}"))"
+        MMPROJ_ACTIVE=1
+    else
+        MMPROJ_STATUS="Disabled (no projector found; pass --mmproj PATH to load)"
+    fi
+else
+    MMPROJ_STATUS="Disabled (--no-mmproj)"
+fi
+
+# 5. Context Shift Configuration
 CTX_SHIFT_ARGS=()
-if [[ "${ENABLE_CTX_SHIFT}" -eq 1 ]]; then
+if [[ "${MMPROJ_ACTIVE}" -eq 1 ]]; then
+    CTX_SHIFT_STATUS="Disabled (Multimodal active; pass --no-mmproj for infinite context shifting)"
+elif [[ "${ENABLE_CTX_SHIFT}" -eq 1 ]]; then
     CTX_SHIFT_ARGS+=("--context-shift")
     CTX_SHIFT_STATUS="Active (Infinite continuous operation)"
 else
     CTX_SHIFT_STATUS="Disabled"
 fi
 
-# 5. Sampling & Template Configuration
+# 6. Sampling & Template Configuration
 JINJA_ARGS=("--jinja")
 if [[ "${ENABLE_THINKING}" -eq 1 ]]; then
-    TEMPERATURE="${CUSTOM_TEMP:-0.1}"
+    TEMPERATURE="${CUSTOM_TEMP:-0.6}"
     TOP_P="${CUSTOM_TOP_P:-0.95}"
-    TOP_K="${CUSTOM_TOP_K:-64}"
+    TOP_K="${CUSTOM_TOP_K:-20}"
     PRESENCE_PENALTY="${CUSTOM_PRESENCE:-0.0}"
-    THINKING_STATUS="Active (Gemma 4 CoT thinking mode, temp ${TEMPERATURE}, top_p ${TOP_P}, top_k ${TOP_K})"
+    THINKING_STATUS="Active (Qwen/DeepSeek CoT reasoning, temp ${TEMPERATURE}, top_p ${TOP_P}, top_k ${TOP_K})"
     case "${TEMPLATE_CHOICE}" in
-        gemma4|gemma)
-            if [[ -f "${SCRIPT_DIR}/models/templates/gemma-4-coder.jinja" ]]; then
-                JINJA_ARGS+=("--chat-template-file" "${SCRIPT_DIR}/models/templates/gemma-4-coder.jinja")
-            elif [[ -f "${SCRIPT_DIR}/models/templates/google-gemma-4-12B-it.jinja" ]]; then
-                JINJA_ARGS+=("--chat-template-file" "${SCRIPT_DIR}/models/templates/google-gemma-4-12B-it.jinja")
+        qwen)
+            if [[ -f "${SCRIPT_DIR}/models/templates/Qwen-Fixed.jinja" ]]; then
+                JINJA_ARGS+=("--chat-template-file" "${SCRIPT_DIR}/models/templates/Qwen-Fixed.jinja")
             fi
-            TEMPLATE_STATUS="Google Gemma 4 Coder (with <|channel>thought & explicit tool-calling)"
+            TEMPLATE_STATUS="Froggeric Qwen-Fixed (--jinja)"
             ;;
         native)
             TEMPLATE_STATUS="Embedded GGUF template"
@@ -441,25 +499,24 @@ if [[ "${ENABLE_THINKING}" -eq 1 ]]; then
                 JINJA_ARGS+=("--chat-template-file" "${TEMPLATE_CHOICE}")
                 TEMPLATE_STATUS="Custom (${TEMPLATE_CHOICE})"
             else
-                JINJA_ARGS+=("--chat-template-file" "${SCRIPT_DIR}/models/templates/gemma-4-coder.jinja")
-                TEMPLATE_STATUS="Google Gemma 4 Coder"
+                JINJA_ARGS+=("--chat-template-file" "${SCRIPT_DIR}/models/templates/Qwen-Fixed.jinja")
+                TEMPLATE_STATUS="Froggeric Qwen-Fixed"
             fi
             ;;
     esac
+    REASONING_ARGS=("--reasoning-format" "deepseek")
 else
-    TEMPERATURE="${CUSTOM_TEMP:-0.1}"
-    TOP_P="${CUSTOM_TOP_P:-0.95}"
+    TEMPERATURE="${CUSTOM_TEMP:-0.7}"
+    TOP_P="${CUSTOM_TOP_P:-0.80}"
     TOP_K="${CUSTOM_TOP_K:-20}"
-    PRESENCE_PENALTY="${CUSTOM_PRESENCE:-0.0}"
-    THINKING_STATUS="Disabled (Direct fast execution, temp ${TEMPERATURE}, top_p ${TOP_P})"
+    PRESENCE_PENALTY="${CUSTOM_PRESENCE:-1.5}"
+    THINKING_STATUS="Disabled (Direct agent mode, temp ${TEMPERATURE}, top_p ${TOP_P}, presence ${PRESENCE_PENALTY})"
     case "${TEMPLATE_CHOICE}" in
-        gemma4|gemma)
-            if [[ -f "${SCRIPT_DIR}/models/templates/gemma-4-coder.jinja" ]]; then
-                JINJA_ARGS+=("--chat-template-file" "${SCRIPT_DIR}/models/templates/gemma-4-coder.jinja")
-            elif [[ -f "${SCRIPT_DIR}/models/templates/google-gemma-4-12B-it.jinja" ]]; then
-                JINJA_ARGS+=("--chat-template-file" "${SCRIPT_DIR}/models/templates/google-gemma-4-12B-it.jinja")
+        qwen)
+            if [[ -f "${SCRIPT_DIR}/models/templates/Qwen-Fixed-no-thinking.jinja" ]]; then
+                JINJA_ARGS+=("--chat-template-file" "${SCRIPT_DIR}/models/templates/Qwen-Fixed-no-thinking.jinja")
             fi
-            TEMPLATE_STATUS="Google Gemma 4 Coder (Direct mode)"
+            TEMPLATE_STATUS="Froggeric Qwen-Fixed-no-thinking (--jinja)"
             ;;
         native)
             TEMPLATE_STATUS="Embedded GGUF template"
@@ -468,30 +525,32 @@ else
             if [[ -f "${TEMPLATE_CHOICE}" ]]; then
                 JINJA_ARGS+=("--chat-template-file" "${TEMPLATE_CHOICE}")
                 TEMPLATE_STATUS="Custom (${TEMPLATE_CHOICE})"
+            else
+                JINJA_ARGS+=("--chat-template-file" "${SCRIPT_DIR}/models/templates/Qwen-Fixed-no-thinking.jinja")
+                TEMPLATE_STATUS="Froggeric Qwen-Fixed-no-thinking"
             fi
             ;;
     esac
+    REASONING_ARGS=("--reasoning-format" "none")
 fi
 
-# 6. GPU Offload Configuration
-GPU_LAYERS="${CUSTOM_NGL:-99}"
+NGL="${CUSTOM_NGL:-99}"
 
-# 7. Print System Status
-echo -e "\n${BOLD}Model:${NC}               ${GREEN}$(basename "${MODEL_PATH}")${NC}"
-echo -e "${BOLD}Architecture:${NC}        ${GREEN}Google Gemma 4 12B + Composer 2.5 & Fable 5 CoT${NC}"
-echo -e "${BOLD}Template Engine:${NC}     ${GREEN}${TEMPLATE_STATUS}${NC}"
-echo -e "${BOLD}Thinking Mode:${NC}       ${GREEN}${THINKING_STATUS}${NC}"
-echo -e "${BOLD}Total Context Pool:${NC}  ${GREEN}$(format_tokens_k "${TOTAL_CTX}") tokens (-c ${TOTAL_CTX})${NC}"
-echo -e "${BOLD}Slots / Agents:${NC}      ${GREEN}${SLOTS} parallel slot(s) (-np ${SLOTS})${NC}"
-echo -e "${BOLD}Context per Slot:${NC}    ${GREEN}$(format_tokens_k "${CTX_PER_SLOT}") tokens per slot${NC}"
-echo -e "${BOLD}KV Cache Allocation:${NC} ${GREEN}${KV_UNIFIED_STATUS}${NC}"
-echo -e "${BOLD}KV Precision:${NC}        ${GREEN}${KV_QUANT} (-ctk ${KV_QUANT} -ctv ${KV_QUANT})${NC}"
-echo -e "${BOLD}Context Shift:${NC}       ${GREEN}${CTX_SHIFT_STATUS}${NC}"
-echo -e "${BOLD}FlashAttention:${NC}      ${GREEN}Active (-fa on)${NC}"
-echo -e "${BOLD}Continuous Batch:${NC}   ${GREEN}Active (-cb -b ${BATCH_SIZE} -ub ${UBATCH_SIZE})${NC}"
-echo -e "${BOLD}CPU Threads:${NC}         ${GREEN}${THREADS} threads (-t ${THREADS} --cpu-range 0-7)${NC}"
-echo -e "${BOLD}GPU Offload:${NC}         ${GREEN}${GPU_LAYERS} layers on AMD Radeon RX 9060 XT (gfx1200)${NC}"
-echo -e "${BOLD}Model Aliases:${NC}       ${GREEN}${ALIAS}${NC}"
+echo -e "\n${BOLD}Server Configuration:${NC}"
+echo -e "  ${BOLD}Model:${NC}             ${CYAN}${MODEL_PATH}${NC}"
+echo -e "  ${BOLD}API Model Alias:${NC}   ${GREEN}${ALIAS}${NC}"
+echo -e "  ${BOLD}Vision Projector:${NC}  ${GREEN}${MMPROJ_STATUS}${NC}"
+echo -e "  ${BOLD}Parallel Slots:${NC}    ${GREEN}${SLOTS} slot(s)${NC}"
+echo -e "  ${BOLD}Context per Slot:${NC}  ${GREEN}${CTX_PER_SLOT} tokens ($(format_tokens_k "${CTX_PER_SLOT}"))${NC}"
+echo -e "  ${BOLD}Total Context Pool:${NC}${GREEN}${TOTAL_CTX} tokens ($(format_tokens_k "${TOTAL_CTX}"))${NC}"
+echo -e "  ${BOLD}Context Shift:${NC}     ${GREEN}${CTX_SHIFT_STATUS}${NC}"
+echo -e "  ${BOLD}KV Cache Alloc:${NC}    ${GREEN}${KV_UNIFIED_STATUS}${NC}"
+echo -e "  ${BOLD}KV Cache Type:${NC}     ${GREEN}${KV_QUANT}${NC}"
+echo -e "  ${BOLD}GPU Offload:${NC}       ${GREEN}100% on AMD Radeon RX 9060 XT (ngl ${NGL}, FA auto)${NC}"
+echo -e "  ${BOLD}Batching:${NC}          ${GREEN}Continuous (-cb) | Chunked Prefill (-ub ${UBATCH_SIZE}, -b ${BATCH_SIZE})${NC}"
+echo -e "  ${BOLD}Thinking Mode:${NC}     ${GREEN}${THINKING_STATUS}${NC}"
+echo -e "  ${BOLD}Chat Template:${NC}     ${GREEN}${TEMPLATE_STATUS}${NC}"
+echo -e "  ${BOLD}Sampling Params:${NC}   ${GREEN}temp ${TEMPERATURE} | top_p ${TOP_P} | top_k ${TOP_K} | presence ${PRESENCE_PENALTY}${NC}"
 
 echo -e "\n${BOLD}${YELLOW}=== Remote Connection Info (From another machine) ===${NC}"
 echo -e "  Web UI:            ${CYAN}http://${LOCAL_IP}:${PORT}${NC}"
@@ -500,27 +559,31 @@ echo -e "  API Key:           ${CYAN}sk-no-key-required${NC}"
 echo -e "------------------------------------------------------\n"
 
 export LLAMA_SERVER_SLOTS_DEBUG=1
+export LLAMA_ARG_ENDPOINT_METRICS=1
 
 exec "${SERVER_BIN}" \
     -m "${MODEL_PATH}" \
     --alias "${ALIAS}" \
     --host "${HOST}" \
     --port "${PORT}" \
+    --metrics \
     -c "${TOTAL_CTX}" \
     -np "${SLOTS}" \
     -b "${BATCH_SIZE}" \
     -ub "${UBATCH_SIZE}" \
     -cb \
+    "${KV_UNIFIED_ARGS[@]}" \
+    "${CTX_SHIFT_ARGS[@]}" \
+    "${MMPROJ_ARGS[@]}" \
     -ctk "${KV_QUANT}" \
     -ctv "${KV_QUANT}" \
-    -ngl "${GPU_LAYERS}" \
-    -fa on \
+    -ngl "${NGL}" \
+    -fit off \
+    -fa auto \
     -t "${THREADS}" \
-    --cpu-range 0-7 \
     --temp "${TEMPERATURE}" \
     --top-p "${TOP_P}" \
     --top-k "${TOP_K}" \
     --presence-penalty "${PRESENCE_PENALTY}" \
-    "${KV_UNIFIED_ARGS[@]}" \
-    "${CTX_SHIFT_ARGS[@]}" \
-    "${JINJA_ARGS[@]}"
+    "${JINJA_ARGS[@]}" \
+    "${REASONING_ARGS[@]}"

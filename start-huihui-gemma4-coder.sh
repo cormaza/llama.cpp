@@ -414,17 +414,19 @@ fi
 # 5. Sampling & Template Configuration
 JINJA_ARGS=("--jinja")
 if [[ "${ENABLE_THINKING}" -eq 1 ]]; then
-    TEMPERATURE="${CUSTOM_TEMP:-1.0}"
+    TEMPERATURE="${CUSTOM_TEMP:-0.1}"
     TOP_P="${CUSTOM_TOP_P:-0.95}"
     TOP_K="${CUSTOM_TOP_K:-64}"
     PRESENCE_PENALTY="${CUSTOM_PRESENCE:-0.0}"
     THINKING_STATUS="Active (Gemma 4 CoT thinking mode, temp ${TEMPERATURE}, top_p ${TOP_P}, top_k ${TOP_K})"
     case "${TEMPLATE_CHOICE}" in
         gemma4|gemma)
-            if [[ -f "${SCRIPT_DIR}/models/templates/google-gemma-4-12B-it.jinja" ]]; then
+            if [[ -f "${SCRIPT_DIR}/models/templates/gemma-4-coder.jinja" ]]; then
+                JINJA_ARGS+=("--chat-template-file" "${SCRIPT_DIR}/models/templates/gemma-4-coder.jinja")
+            elif [[ -f "${SCRIPT_DIR}/models/templates/google-gemma-4-12B-it.jinja" ]]; then
                 JINJA_ARGS+=("--chat-template-file" "${SCRIPT_DIR}/models/templates/google-gemma-4-12B-it.jinja")
             fi
-            TEMPLATE_STATUS="Google Gemma 4 12B (with native <|channel>thought & tool calling)"
+            TEMPLATE_STATUS="Google Gemma 4 Coder (with <|channel>thought & explicit tool-calling)"
             ;;
         native)
             TEMPLATE_STATUS="Embedded GGUF template"
@@ -434,23 +436,25 @@ if [[ "${ENABLE_THINKING}" -eq 1 ]]; then
                 JINJA_ARGS+=("--chat-template-file" "${TEMPLATE_CHOICE}")
                 TEMPLATE_STATUS="Custom (${TEMPLATE_CHOICE})"
             else
-                JINJA_ARGS+=("--chat-template-file" "${SCRIPT_DIR}/models/templates/google-gemma-4-12B-it.jinja")
-                TEMPLATE_STATUS="Google Gemma 4 12B"
+                JINJA_ARGS+=("--chat-template-file" "${SCRIPT_DIR}/models/templates/gemma-4-coder.jinja")
+                TEMPLATE_STATUS="Google Gemma 4 Coder"
             fi
             ;;
     esac
 else
-    TEMPERATURE="${CUSTOM_TEMP:-0.2}"
+    TEMPERATURE="${CUSTOM_TEMP:-0.1}"
     TOP_P="${CUSTOM_TOP_P:-0.95}"
     TOP_K="${CUSTOM_TOP_K:-20}"
     PRESENCE_PENALTY="${CUSTOM_PRESENCE:-0.0}"
     THINKING_STATUS="Disabled (Direct fast execution, temp ${TEMPERATURE}, top_p ${TOP_P})"
     case "${TEMPLATE_CHOICE}" in
         gemma4|gemma)
-            if [[ -f "${SCRIPT_DIR}/models/templates/google-gemma-4-12B-it.jinja" ]]; then
+            if [[ -f "${SCRIPT_DIR}/models/templates/gemma-4-coder.jinja" ]]; then
+                JINJA_ARGS+=("--chat-template-file" "${SCRIPT_DIR}/models/templates/gemma-4-coder.jinja")
+            elif [[ -f "${SCRIPT_DIR}/models/templates/google-gemma-4-12B-it.jinja" ]]; then
                 JINJA_ARGS+=("--chat-template-file" "${SCRIPT_DIR}/models/templates/google-gemma-4-12B-it.jinja")
             fi
-            TEMPLATE_STATUS="Google Gemma 4 12B (Direct mode)"
+            TEMPLATE_STATUS="Google Gemma 4 Coder (Direct mode)"
             ;;
         native)
             TEMPLATE_STATUS="Embedded GGUF template"
