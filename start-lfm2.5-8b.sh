@@ -415,7 +415,7 @@ fi
 # 5. Sampling & Template Configuration
 JINJA_ARGS=("--jinja")
 if [[ "${ENABLE_THINKING}" -eq 1 ]]; then
-    TEMPERATURE="${CUSTOM_TEMP:-0.6}"
+    TEMPERATURE="${CUSTOM_TEMP:-0.1}"
     TOP_P="${CUSTOM_TOP_P:-0.95}"
     TOP_K="${CUSTOM_TOP_K:-20}"
     PRESENCE_PENALTY="${CUSTOM_PRESENCE:-0.0}"
