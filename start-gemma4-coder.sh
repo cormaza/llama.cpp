@@ -1,8 +1,9 @@
 #!/usr/bin/env bash
 # ==============================================================================
-# start-lfm2.5-8b.sh - Launcher for LFM2.5-8B-A1B-Hermes-Agentic-Coder (DuoNeural)
+# start-gemma4-coder.sh - Launcher for Gemma4-12B-Coder (Composer 2.5 x Fable 5)
+# Model: https://huggingface.co/yuxinlu1/gemma-4-12B-coder-fable5-composer2.5-v1-GGUF
 # Hardware: AMD Radeon RX 9060 XT (16GB VRAM, ROCm / HIP gfx1200)
-# Features: Liquid MoE (8.3B Total / 1.5B Active) + Hermes Agentic Tool-Use
+# Features: Google Gemma 4 12B + Composer 2.5 & Fable 5 Verifiable CoT Coding
 # ==============================================================================
 
 set -euo pipefail
@@ -19,15 +20,15 @@ SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 BIN_DIR="${SCRIPT_DIR}/build-amd/bin"
 SERVER_BIN="${SERVER_BIN:-${BIN_DIR}/llama-server}"
 
-DEFAULT_MODEL="${SCRIPT_DIR}/models/LFM2.5-8B-A1B-Hermes-Agentic-Coder-Abliterated-v3-Q4_K_M.gguf"
-ALT_MODEL_Q5="${SCRIPT_DIR}/models/LFM2.5-8B-A1B-Hermes-Agentic-Coder-Abliterated-v3-Q5_K_M.gguf"
-ALT_MODEL_Q6="${SCRIPT_DIR}/models/LFM2.5-8B-A1B-Hermes-Agentic-Coder-Abliterated-v3-Q6_K.gguf"
-ALT_MODEL_Q8="${SCRIPT_DIR}/models/LFM2.5-8B-A1B-Hermes-Agentic-Coder-Abliterated-v3-Q8_0.gguf"
-ALT_MODEL_BF16="${SCRIPT_DIR}/models/LFM2.5-8B-A1B-Hermes-Agentic-Coder-Abliterated-v3-BF16.gguf"
+DEFAULT_MODEL="${SCRIPT_DIR}/models/gemma4-coding-Q4_K_M.gguf"
+ALT_MODEL_Q6="${SCRIPT_DIR}/models/gemma4-coding-Q6_K.gguf"
+ALT_MODEL_Q8="${SCRIPT_DIR}/models/gemma4-coding-Q8_0.gguf"
+ALT_MODEL_Q3="${SCRIPT_DIR}/models/gemma4-coding-Q3_K_M.gguf"
+ALT_MODEL_Q2="${SCRIPT_DIR}/models/gemma4-coding-Q2_K.gguf"
 
 MODEL_PATH=""
 ENABLE_THINKING=1
-TEMPLATE_CHOICE="hermes"
+TEMPLATE_CHOICE="gemma4"
 ENABLE_CTX_SHIFT=1
 ENABLE_KV_UNIFIED=0
 
@@ -42,24 +43,24 @@ CUSTOM_TOP_K=""
 CUSTOM_PRESENCE=""
 KV_QUANT="q4_0"
 CUSTOM_NGL=""
-ALIAS="lfm2.5-8b,lfm-8b,lfm2.5-hermes-coder,lfm2.5,hermes-coder"
+ALIAS="gemma-4-coder,gemma4-coder,gemma4-12b-coder,gemma-4,gemma-coder,gemma"
 THREADS=8
 
-# Helper function to parse human-readable token notation (e.g., 3k, 8k, 16k, 32k, 64k, 128k)
+# Helper function to parse human-readable token notation (e.g., 32k, 64k, 128k, 256k)
 parse_tokens() {
     local val="${1,,}"
     val="${val//[[:space:]]/}"
     case "${val}" in
         0)
-            echo 128000
+            echo 262144
             return
             ;;
-        3k|3072)
-            echo 3072
+        256k|262144)
+            echo 262144
             return
             ;;
-        128k|128000)
-            echo 128000
+        128k|131072)
+            echo 131072
             return
             ;;
         64k|65536)
@@ -88,7 +89,9 @@ parse_tokens() {
 
 format_tokens_k() {
     local n="$1"
-    if [[ "$n" -eq 128000 || "$n" -eq 131072 ]]; then
+    if [[ "$n" -eq 262144 ]]; then
+        echo "256k"
+    elif [[ "$n" -eq 131072 ]]; then
         echo "128k"
     elif [[ "$n" -eq 65536 ]]; then
         echo "64k"
@@ -96,8 +99,6 @@ format_tokens_k() {
         echo "32k"
     elif [[ "$n" -eq 16384 ]]; then
         echo "16k"
-    elif [[ "$n" -eq 3072 ]]; then
-        echo "3k"
     elif [[ $(( n % 1024 )) -eq 0 ]]; then
         echo "$(( n / 1024 ))k"
     else
@@ -112,47 +113,38 @@ show_help() {
     cat << EOF
 Usage: $(basename "$0") [options]
 
-Starts llama-server for LFM2.5-8B-A1B-Hermes-Agentic-Coder (DuoNeural Liquid MoE)
-optimized for AMD Radeon RX 9060 XT (16GB VRAM, ROCm / HIP gfx1200).
-
-Features:
-  - Liquid Foundation Model MoE architecture (8.3B Total, 1.5B Active parameters per token)
-  - Blistering inference speeds (~360 tokens/sec on modern GPUs)
-  - Hermes Function Calling AST & System 2 <thought> chain-of-thought planning
-  - 100% Uncensored abliterated weights for low-level systems & security research
-  - Infinite context shifting enabled by default (pure text architecture)
-  - 100% GPU Offload with Flash Attention & Q4_0 KV cache
+Launcher for Gemma4-12B-Coder (Composer 2.5 x Fable 5 CoT Distillation)
+Optimized for AMD Radeon RX 9060 XT (16GB VRAM, ROCm/HIP gfx1200)
 
 Options:
-  -m, --model PATH              Path to LFM2.5 GGUF model (default: auto-detect Q4/Q5/Q6/Q8)
-  -a, --alias NAMES             Model alias for API clients (default: ${ALIAS})
-  -c, --context, --ctx-size, --total-ctx N  Total context pool across all slots (e.g. 3072, 16k, 32k, 64k, 128k; default: 32k)
-  --ctx-slot N                  Explicit context per slot override (e.g. 3072, 16k, 32k)
-  --slots, -np, --parallel N    Number of parallel agent slots (default: 1; use 2 or 4 for multi-agent)
+  -m, --model PATH              Path to GGUF model (default: auto-detected in models/)
+  -a, --alias NAMES             Comma-separated model aliases for API clients
+  -c, --context, --total-ctx N  Total context pool across all slots (default: 64k; supports 32k, 64k, 128k, 256k)
+  --ctx-slot N                  Context per slot (e.g. 32k, 64k; total = slots * ctx_slot)
+  --slots, -np N                Number of parallel agent slots (default: 1; use 2 or 4 for multi-agent)
   -kvu, --kv-unified            Enable dynamic unified KV cache pool shared across all slots
-  --thinking                    Enable reasoning mode (default; temp 0.6, top_p 0.95, top_k 20)
-  --no-thinking                 Disable reasoning mode (direct agent mode; temp 0.2, top_p 0.95)
-  --template TYPE               Chat template: hermes (default) | native
-  --temp N                      Sampling temperature override
-  --top-p N                     Top-p sampling override
-  --top-k N                     Top-k sampling override
-  --presence-penalty N          Presence penalty override
+  --thinking                    Enable native Gemma 4 thinking channel (default: active, temp 1.0, top-k 64)
+  --no-thinking                 Disable thinking mode (fast direct code generation, temp 0.2)
+  --template NAME|PATH          Chat template: 'gemma4' (default), 'native', or custom .jinja file
+  --temp N                      Sampling temperature (default: 1.0 with thinking, 0.2 without)
+  --top-p N                     Top-p sampling (default: 0.95)
+  --top-k N                     Top-k sampling (default: 64 with thinking, 20 without)
+  --presence-penalty N          Presence penalty (default: 0.0)
+  --kv-quant QUANT              KV cache quantization (default: q4_0; options: q8_0, f16)
+  --ngl N                       Number of GPU offloaded layers (default: 99 for full offload)
   -t, --threads N               Number of CPU threads (default: 8)
-  --context-shift               Enable context shifting (default: enabled)
-  --no-context-shift            Disable context shifting
+  --no-context-shift            Disable continuous context shifting
   -p, --port PORT               HTTP server port (default: 8080)
   --host HOST                   Host address to bind (default: 0.0.0.0)
-  --kv-quant TYPE               KV Cache precision: q4_0 (default, fast) | q8_0 | f16
-  --ngl N                       GPU layers offloaded (default: 99, 100% GPU)
   -h, --help                    Show this help message
 
 Examples:
-  ./start-lfm2.5-8b.sh                            # Full stack with reasoning (32k context pool)
-  ./start-lfm2.5-8b.sh -c 3072                    # Native HumanEval+ benchmark context length
-  ./start-lfm2.5-8b.sh -c 128k                    # Max 128k sequence length
-  ./start-lfm2.5-8b.sh --no-thinking              # Fast direct code execution mode (temp 0.2)
-  ./start-lfm2.5-8b.sh --slots 2 --ctx-slot 16k   # Dual-agent serving (16k context per slot)
-  ./start-lfm2.5-8b.sh -kvu -c 64k --slots 4      # Dynamic shared unified KV pool
+  ./start-gemma4-coder.sh                           # 1 slot x 64k context with thinking (temp 1.0)
+  ./start-gemma4-coder.sh -c 128k                   # 1 slot x 128k deep context
+  ./start-gemma4-coder.sh -c 256k                   # 1 slot x 256k maximum native context
+  ./start-gemma4-coder.sh --no-thinking             # Fast direct code execution mode (temp 0.2)
+  ./start-gemma4-coder.sh --slots 2 --ctx-slot 32k  # Dual-agent serving (32k context per slot)
+  ./start-gemma4-coder.sh -kvu -c 128k --slots 4    # Dynamic shared unified KV pool
 EOF
 }
 
@@ -250,16 +242,28 @@ while [[ $# -gt 0 ]]; do
             CUSTOM_PRESENCE="${1#*=}"
             shift
             ;;
+        --kv-quant|--ctk|--ctv)
+            KV_QUANT="$2"
+            shift 2
+            ;;
+        --kv-quant=*|--ctk=*|--ctv=*)
+            KV_QUANT="${1#*=}"
+            shift
+            ;;
+        --ngl|--n-gpu-layers)
+            CUSTOM_NGL="$2"
+            shift 2
+            ;;
+        --ngl=*|--n-gpu-layers=*)
+            CUSTOM_NGL="${1#*=}"
+            shift
+            ;;
         -t|--threads)
             THREADS="$2"
             shift 2
             ;;
         -t=*|--threads=*)
             THREADS="${1#*=}"
-            shift
-            ;;
-        --context-shift)
-            ENABLE_CTX_SHIFT=1
             shift
             ;;
         --no-context-shift)
@@ -282,28 +286,12 @@ while [[ $# -gt 0 ]]; do
             HOST="${1#*=}"
             shift
             ;;
-        --kv-quant)
-            KV_QUANT="$2"
-            shift 2
-            ;;
-        --kv-quant=*)
-            KV_QUANT="${1#*=}"
-            shift
-            ;;
-        --ngl)
-            CUSTOM_NGL="$2"
-            shift 2
-            ;;
-        --ngl=*)
-            CUSTOM_NGL="${1#*=}"
-            shift
-            ;;
         -h|--help)
             show_help
             exit 0
             ;;
         *)
-            echo -e "${RED}Unknown option: $1${NC}"
+            echo -e "${RED}[ERROR] Unknown argument: $1${NC}"
             show_help
             exit 1
             ;;
@@ -311,41 +299,50 @@ while [[ $# -gt 0 ]]; do
 done
 
 echo -e "${BOLD}${CYAN}======================================================${NC}"
-echo -e "${BOLD}${CYAN}  LFM2.5-8B-A1B Hermes Coder (ROCm / HIP gfx1200)     ${NC}"
+echo -e "${BOLD}${CYAN}  Gemma4-12B-Coder Server (ROCm / HIP gfx1200)        ${NC}"
+echo -e "${BOLD}${CYAN}  Google Gemma 4 12B + Composer 2.5 & Fable 5 CoT     ${NC}"
 echo -e "${BOLD}${CYAN}======================================================${NC}"
 
-# 1. Check binaries
+# 1. Binary check
 if [[ ! -x "${SERVER_BIN}" ]]; then
     echo -e "${RED}[ERROR] Binary not found at: ${SERVER_BIN}${NC}"
     echo -e "Please build first: ${CYAN}./scripts/build-amd-rocm.sh${NC}"
     exit 1
 fi
 
-# 2. Select Model
+# 2. Model Auto-Detection
 if [[ -z "${MODEL_PATH}" ]]; then
     if [[ -f "${DEFAULT_MODEL}" ]]; then
         MODEL_PATH="${DEFAULT_MODEL}"
-    elif [[ -f "${ALT_MODEL_Q5}" ]]; then
-        MODEL_PATH="${ALT_MODEL_Q5}"
     elif [[ -f "${ALT_MODEL_Q6}" ]]; then
         MODEL_PATH="${ALT_MODEL_Q6}"
     elif [[ -f "${ALT_MODEL_Q8}" ]]; then
         MODEL_PATH="${ALT_MODEL_Q8}"
-    elif [[ -f "${ALT_MODEL_BF16}" ]]; then
-        MODEL_PATH="${ALT_MODEL_BF16}"
+    elif [[ -f "${ALT_MODEL_Q3}" ]]; then
+        MODEL_PATH="${ALT_MODEL_Q3}"
+    elif [[ -f "${ALT_MODEL_Q2}" ]]; then
+        MODEL_PATH="${ALT_MODEL_Q2}"
     else
-        FOUND_MODELS=($(find "${SCRIPT_DIR}/models" -maxdepth 1 \( -iname "*lfm2.5*8b*a1b*.gguf" -o -iname "*lfm2.5*hermes*.gguf" -o -iname "*lfm2.5*.gguf" \) 2>/dev/null || true))
-        if [[ ${#FOUND_MODELS[@]} -gt 0 ]]; then
-            MODEL_PATH="${FOUND_MODELS[0]}"
+        echo -e "${YELLOW}[WARN] No Gemma4-12B-Coder model found in ./models/${NC}"
+        echo -e "You can download it with:"
+        echo -e "  ${CYAN}./scripts/download-gemma4-coder.sh${NC}\n"
+        read -rp "Would you like to download it now? [y/N]: " RUN_DL
+        if [[ "${RUN_DL}" =~ ^[Yy]$ ]]; then
+            "${SCRIPT_DIR}/scripts/download-gemma4-coder.sh"
+            MODEL_PATH="${DEFAULT_MODEL}"
         else
-            echo -e "${YELLOW}[WARN] No LFM2.5-8B-A1B-Hermes-Agentic-Coder GGUF model found in ./models/${NC}"
-            echo -e "Run ${CYAN}./scripts/download-lfm2.5-8b.sh${NC} to download the model."
+            echo -e "${RED}[ERROR] Model file required to proceed.${NC}"
             exit 1
         fi
     fi
 fi
 
-# 3. Context Calculation & VRAM Bounds
+if [[ ! -f "${MODEL_PATH}" ]]; then
+    echo -e "${RED}[ERROR] Specified model file does not exist: ${MODEL_PATH}${NC}"
+    exit 1
+fi
+
+# 3. Context Calculation
 if [[ -n "${CUSTOM_CTX}" ]]; then
     CUSTOM_CTX="$(parse_tokens "${CUSTOM_CTX}")"
 fi
@@ -363,24 +360,23 @@ elif [[ -n "${CUSTOM_CTX}" ]]; then
     TOTAL_CTX="${CUSTOM_CTX}"
     CTX_PER_SLOT=$(( TOTAL_CTX / SLOTS ))
 else
-    # Default: 32768 tokens distributed across slots (optimal for agentic coding)
-    TOTAL_CTX=32768
+    # Default: 65536 (64k) tokens distributed across slots
+    TOTAL_CTX=65536
     CTX_PER_SLOT=$(( TOTAL_CTX / SLOTS ))
 fi
 
 # Ensure minimum viable context per slot
-if [[ "${CTX_PER_SLOT}" -lt 1024 ]]; then
-    CTX_PER_SLOT=1024
+if [[ "${CTX_PER_SLOT}" -lt 2048 ]]; then
+    CTX_PER_SLOT=2048
     TOTAL_CTX=$(( SLOTS * CTX_PER_SLOT ))
 fi
 
-MAX_SAFE_CTX=128000
-if [[ "${TOTAL_CTX}" -gt "${MAX_SAFE_CTX}" ]]; then
-    echo -e "${YELLOW}[WARN] Total context (${TOTAL_CTX} tokens) exceeds the 128k native context limit.${NC}"
-    echo -e "${YELLOW}[WARN] Ensure you have sufficient RAM or adjust offload layers if running near limits.${NC}"
+MAX_NATIVE_CTX=262144
+if [[ "${TOTAL_CTX}" -gt "${MAX_NATIVE_CTX}" ]]; then
+    echo -e "${YELLOW}[WARN] Total context (${TOTAL_CTX} tokens) exceeds 256k native context limit.${NC}"
 fi
 
-# Dynamic batch sizes: clamp batch size to total context if context is small
+# Dynamic batch sizes
 BATCH_SIZE=2048
 UBATCH_SIZE=1024
 if [[ "${TOTAL_CTX}" -lt "${BATCH_SIZE}" ]]; then
@@ -403,7 +399,7 @@ if [[ "${ENABLE_KV_UNIFIED}" -eq 1 ]]; then
     fi
 fi
 
-# 4. Context Shift (Pure text model allows infinite continuous generation)
+# 4. Context Shift
 CTX_SHIFT_ARGS=()
 if [[ "${ENABLE_CTX_SHIFT}" -eq 1 ]]; then
     CTX_SHIFT_ARGS+=("--context-shift")
@@ -415,17 +411,17 @@ fi
 # 5. Sampling & Template Configuration
 JINJA_ARGS=("--jinja")
 if [[ "${ENABLE_THINKING}" -eq 1 ]]; then
-    TEMPERATURE="${CUSTOM_TEMP:-0.1}"
+    TEMPERATURE="${CUSTOM_TEMP:-1.0}"
     TOP_P="${CUSTOM_TOP_P:-0.95}"
-    TOP_K="${CUSTOM_TOP_K:-20}"
+    TOP_K="${CUSTOM_TOP_K:-64}"
     PRESENCE_PENALTY="${CUSTOM_PRESENCE:-0.0}"
-    THINKING_STATUS="Active (System 2 Thinking mode, temp ${TEMPERATURE}, top_p ${TOP_P}, top_k ${TOP_K})"
+    THINKING_STATUS="Active (Gemma 4 CoT thinking mode, temp ${TEMPERATURE}, top_p ${TOP_P}, top_k ${TOP_K})"
     case "${TEMPLATE_CHOICE}" in
-        hermes|lfm)
-            if [[ -f "${SCRIPT_DIR}/models/templates/LFM2.5-Hermes-Agentic-Coder.jinja" ]]; then
-                JINJA_ARGS+=("--chat-template-file" "${SCRIPT_DIR}/models/templates/LFM2.5-Hermes-Agentic-Coder.jinja")
+        gemma4|gemma)
+            if [[ -f "${SCRIPT_DIR}/models/templates/google-gemma-4-12B-it.jinja" ]]; then
+                JINJA_ARGS+=("--chat-template-file" "${SCRIPT_DIR}/models/templates/google-gemma-4-12B-it.jinja")
             fi
-            TEMPLATE_STATUS="DuoNeural Hermes Agentic Coder (with <thought> & tool calling)"
+            TEMPLATE_STATUS="Google Gemma 4 12B (with native <|channel>thought & tool calling)"
             ;;
         native)
             TEMPLATE_STATUS="Embedded GGUF template"
@@ -435,24 +431,23 @@ if [[ "${ENABLE_THINKING}" -eq 1 ]]; then
                 JINJA_ARGS+=("--chat-template-file" "${TEMPLATE_CHOICE}")
                 TEMPLATE_STATUS="Custom (${TEMPLATE_CHOICE})"
             else
-                JINJA_ARGS+=("--chat-template-file" "${SCRIPT_DIR}/models/templates/LFM2.5-Hermes-Agentic-Coder.jinja")
-                TEMPLATE_STATUS="DuoNeural Hermes Agentic Coder"
+                JINJA_ARGS+=("--chat-template-file" "${SCRIPT_DIR}/models/templates/google-gemma-4-12B-it.jinja")
+                TEMPLATE_STATUS="Google Gemma 4 12B"
             fi
             ;;
     esac
-    REASONING_ARGS=("--reasoning-format" "deepseek")
 else
-    TEMPERATURE="${CUSTOM_TEMP:-0.2}" # Fast direct code execution
+    TEMPERATURE="${CUSTOM_TEMP:-0.2}"
     TOP_P="${CUSTOM_TOP_P:-0.95}"
     TOP_K="${CUSTOM_TOP_K:-20}"
     PRESENCE_PENALTY="${CUSTOM_PRESENCE:-0.0}"
     THINKING_STATUS="Disabled (Direct fast execution, temp ${TEMPERATURE}, top_p ${TOP_P})"
     case "${TEMPLATE_CHOICE}" in
-        hermes|lfm)
-            if [[ -f "${SCRIPT_DIR}/models/templates/LFM2.5-Hermes-Agentic-Coder.jinja" ]]; then
-                JINJA_ARGS+=("--chat-template-file" "${SCRIPT_DIR}/models/templates/LFM2.5-Hermes-Agentic-Coder.jinja")
+        gemma4|gemma)
+            if [[ -f "${SCRIPT_DIR}/models/templates/google-gemma-4-12B-it.jinja" ]]; then
+                JINJA_ARGS+=("--chat-template-file" "${SCRIPT_DIR}/models/templates/google-gemma-4-12B-it.jinja")
             fi
-            TEMPLATE_STATUS="DuoNeural Hermes Agentic Coder (Direct Mode)"
+            TEMPLATE_STATUS="Google Gemma 4 12B (Direct mode)"
             ;;
         native)
             TEMPLATE_STATUS="Embedded GGUF template"
@@ -461,32 +456,31 @@ else
             if [[ -f "${TEMPLATE_CHOICE}" ]]; then
                 JINJA_ARGS+=("--chat-template-file" "${TEMPLATE_CHOICE}")
                 TEMPLATE_STATUS="Custom (${TEMPLATE_CHOICE})"
-            else
-                JINJA_ARGS+=("--chat-template-file" "${SCRIPT_DIR}/models/templates/LFM2.5-Hermes-Agentic-Coder.jinja")
-                TEMPLATE_STATUS="DuoNeural Hermes Agentic Coder"
             fi
             ;;
     esac
-    REASONING_ARGS=("--reasoning-format" "none")
 fi
 
+# 6. GPU Offload Configuration
 GPU_LAYERS="${CUSTOM_NGL:-99}"
 
-echo -e "${BOLD}Model:${NC}               ${CYAN}${MODEL_PATH}${NC}"
-echo -e "${BOLD}Architecture:${NC}        ${GREEN}Liquid Foundation Model MoE (8.3B Total, 1.5B Active / Token)${NC}"
-echo -e "${BOLD}API Model Alias:${NC}     ${GREEN}${ALIAS}${NC}"
-echo -e "${BOLD}Parallel Slots:${NC}      ${GREEN}${SLOTS} slot(s)${NC}"
-echo -e "${BOLD}Context per Slot:${NC}    ${GREEN}${CTX_PER_SLOT} tokens ($(format_tokens_k "${CTX_PER_SLOT}") tokens)${NC}"
-echo -e "${BOLD}Total Context Pool:${NC}  ${GREEN}${TOTAL_CTX} tokens ($(format_tokens_k "${TOTAL_CTX}") tokens)${NC}"
-echo -e "${BOLD}KV Cache Pool:${NC}       ${GREEN}${KV_UNIFIED_STATUS}${NC}"
-echo -e "${BOLD}Context Shift:${NC}       ${GREEN}${CTX_SHIFT_STATUS}${NC}"
-echo -e "${BOLD}KV Cache Precision:${NC}  ${GREEN}${KV_QUANT} (-ctk ${KV_QUANT} -ctv ${KV_QUANT})${NC}"
-echo -e "${BOLD}GPU Offload:${NC}         ${GREEN}All layers offloaded to GPU (-ngl ${GPU_LAYERS} -fa on)${NC}"
-echo -e "${BOLD}Batching:${NC}            ${GREEN}Continuous (-cb) | Chunked Prefill (-ub ${UBATCH_SIZE}, -b ${BATCH_SIZE})${NC}"
-echo -e "${BOLD}CPU Affinity:${NC}        ${GREEN}Pinned to 8 P-cores (--cpu-range 0-7, -t ${THREADS})${NC}"
-echo -e "${BOLD}Chat Template:${NC}       ${GREEN}${TEMPLATE_STATUS}${NC}"
+# 7. Print System Status
+echo -e "\n${BOLD}Model:${NC}               ${GREEN}$(basename "${MODEL_PATH}")${NC}"
+echo -e "${BOLD}Architecture:${NC}        ${GREEN}Google Gemma 4 12B + Composer 2.5 & Fable 5 CoT${NC}"
+echo -e "${BOLD}Template Engine:${NC}     ${GREEN}${TEMPLATE_STATUS}${NC}"
 echo -e "${BOLD}Thinking Mode:${NC}       ${GREEN}${THINKING_STATUS}${NC}"
-echo -e "${BOLD}Sampling Params:${NC}     ${GREEN}temp ${TEMPERATURE} | top_p ${TOP_P} | top_k ${TOP_K} | presence ${PRESENCE_PENALTY}${NC}"
+echo -e "${BOLD}Total Context Pool:${NC}  ${GREEN}$(format_tokens_k "${TOTAL_CTX}") tokens (-c ${TOTAL_CTX})${NC}"
+echo -e "${BOLD}Slots / Agents:${NC}      ${GREEN}${SLOTS} parallel slot(s) (-np ${SLOTS})${NC}"
+echo -e "${BOLD}Context per Slot:${NC}    ${GREEN}$(format_tokens_k "${CTX_PER_SLOT}") tokens per slot${NC}"
+echo -e "${BOLD}KV Cache Allocation:${NC} ${GREEN}${KV_UNIFIED_STATUS}${NC}"
+echo -e "${BOLD}KV Precision:${NC}        ${GREEN}${KV_QUANT} (-ctk ${KV_QUANT} -ctv ${KV_QUANT})${NC}"
+echo -e "${BOLD}Context Shift:${NC}       ${GREEN}${CTX_SHIFT_STATUS}${NC}"
+echo -e "${BOLD}FlashAttention:${NC}      ${GREEN}Active (-fa on)${NC}"
+echo -e "${BOLD}Continuous Batch:${NC}   ${GREEN}Active (-cb -b ${BATCH_SIZE} -ub ${UBATCH_SIZE})${NC}"
+echo -e "${BOLD}CPU Threads:${NC}         ${GREEN}${THREADS} threads (-t ${THREADS} --cpu-range 0-7)${NC}"
+echo -e "${BOLD}GPU Offload:${NC}         ${GREEN}${GPU_LAYERS} layers on AMD Radeon RX 9060 XT (gfx1200)${NC}"
+echo -e "${BOLD}Model Aliases:${NC}       ${GREEN}${ALIAS}${NC}"
+
 echo -e "\n${BOLD}${YELLOW}=== Remote Connection Info (From another machine) ===${NC}"
 echo -e "  Web UI:            ${CYAN}http://${LOCAL_IP}:${PORT}${NC}"
 echo -e "  OpenAI API Base:   ${CYAN}http://${LOCAL_IP}:${PORT}/v1${NC}"
@@ -517,5 +511,4 @@ exec "${SERVER_BIN}" \
     --presence-penalty "${PRESENCE_PENALTY}" \
     "${KV_UNIFIED_ARGS[@]}" \
     "${CTX_SHIFT_ARGS[@]}" \
-    "${JINJA_ARGS[@]}" \
-    "${REASONING_ARGS[@]}"
+    "${JINJA_ARGS[@]}"

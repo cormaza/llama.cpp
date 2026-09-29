@@ -1,18 +1,43 @@
 {{- bos_token -}}
-{%- if messages[0]['role'] == 'system' -%}
-    {{- '<|im_start|>system\n' + messages[0]['content'] -}}
-    {%- if tools is defined and tools -%}
-        {{- '\n<tools>\n' + (tools | tojson) + '\n</tools>' -}}
+{%- set preserve_thinking = preserve_thinking | default(false) -%}
+{%- macro render_content(content) -%}
+    {%- if content is string -%}
+        {{- content -}}
+    {%- elif content is iterable -%}
+        {%- for item in content -%}
+            {%- if item is mapping and item.text is defined -%}
+                {{- item.text -}}
+            {%- elif item is string -%}
+                {{- item -}}
+            {%- endif -%}
+        {%- endfor -%}
     {%- endif -%}
-    {{- '<|im_end|>\n' -}}
+{%- endmacro -%}
+{%- if messages[0]['role'] == 'system' -%}
+    {{- '<|im_start|>system\n' + render_content(messages[0]['content']) -}}
+    {%- if tools is defined and tools -%}
+        {{- '\n<tools>\n' + (tools | tojson) + '\n</tools>\nFor each function call return a json object with function name and arguments within <tool_call></tool_call> XML tags as follows:\n<tool_call>\n{"name": <function-name>, "arguments": <args-dict>}\n</tool_call>' -}}
+    {%- endif -%}
+    {{- '\nYou may think step-by-step inside <thought>...</thought> tags before answering or executing tools.\nAlways close your thinking with </thought> before calling tools or answering.\nAlways write your final response or tool call outside the <thought> tags.<|im_end|>\n' -}}
     {%- set offset = 1 -%}
 {%- else -%}
+    {{- '<|im_start|>system\nYou are a helpful assistant with tool calling capabilities.' -}}
     {%- if tools is defined and tools -%}
-        {{- '<|im_start|>system\nYou are a helpful assistant with tool calling capabilities. When you need to call a tool, respond with a <tool_call> block.\n<tools>\n' + (tools | tojson) + '\n</tools><|im_end|>\n' -}}
+        {{- '\n<tools>\n' + (tools | tojson) + '\n</tools>\nFor each function call return a json object with function name and arguments within <tool_call></tool_call> XML tags as follows:\n<tool_call>\n{"name": <function-name>, "arguments": <args-dict>}\n</tool_call>' -}}
     {%- endif -%}
+    {{- '\nYou may think step-by-step inside <thought>...</thought> tags before answering or executing tools.\nAlways close your thinking with </thought> before calling tools or answering.\nAlways write your final response or tool call outside the <thought> tags.<|im_end|>\n' -}}
     {%- set offset = 0 -%}
 {%- endif -%}
+{%- set ns = namespace(last_user_index=-1, last_assistant_index=-1) -%}
+{%- for message in messages -%}
+    {%- if message['role'] == 'user' -%}
+        {%- set ns.last_user_index = loop.index0 -%}
+    {%- elif message['role'] == 'assistant' -%}
+        {%- set ns.last_assistant_index = loop.index0 -%}
+    {%- endif -%}
+{%- endfor -%}
 {%- for message in messages[offset:] -%}
+    {%- set current_index = loop.index0 + offset -%}
     {{- '<|im_start|>' + message['role'] + '\n' -}}
     {%- if message['role'] == 'assistant' -%}
         {%- set reasoning_content = '' -%}
@@ -23,13 +48,22 @@
         {%- elif message.reasoning is defined and message.reasoning -%}
             {%- set reasoning_content = message.reasoning -%}
         {%- endif -%}
-        {%- if reasoning_content -%}
+        {%- if reasoning_content and (preserve_thinking or (current_index > ns.last_user_index and current_index >= ns.last_assistant_index)) -%}
             {{- '<thought>\n' + reasoning_content + '\n</thought>\n' -}}
         {%- endif -%}
-        {%- if message.content is defined and message.content -%}
-            {{- message.content -}}
+        {%- set clean_content = render_content(message.content if message.content is defined else '') -%}
+        {%- if not (preserve_thinking or (current_index > ns.last_user_index and current_index >= ns.last_assistant_index)) -%}
+            {%- if '</thought>' in clean_content -%}
+                {%- set clean_content = clean_content.split('</thought>')[-1] | trim -%}
+            {%- endif -%}
         {%- endif -%}
-        {%- if message.tool_calls is defined and message.tool_calls -%}
+        {%- if clean_content | trim == '</thought>' -%}
+            {%- set clean_content = '' -%}
+        {%- endif -%}
+        {%- if clean_content -%}
+            {{- clean_content -}}
+        {%- endif -%}
+        {%- if message.tool_calls is defined and message.tool_calls and '<tool_call>' not in clean_content -%}
             {%- for tool_call in message.tool_calls -%}
                 {%- if tool_call.function is defined -%}
                     {%- set tool_name = tool_call.function.name -%}
@@ -38,20 +72,20 @@
                     {%- set tool_name = tool_call.name -%}
                     {%- set tool_args = tool_call.arguments -%}
                 {%- endif -%}
-                {{- '\n<tool_call>\n{"name": "' + tool_name + '", "arguments": ' -}}
+                {{- '\n<tool_call>{"name": "' + tool_name + '", "arguments": ' -}}
                 {%- if tool_args is string -%}
                     {{- tool_args -}}
                 {%- else -%}
                     {{- (tool_args | tojson) -}}
                 {%- endif -%}
-                {{- '}\n</tool_call>' -}}
+                {{- '}</tool_call>' -}}
             {%- endfor -%}
         {%- endif -%}
         {{- '<|im_end|>\n' -}}
     {%- elif message['role'] == 'tool' -%}
-        {{- '<tool_response>\n' + message['content'] + '\n</tool_response><|im_end|>\n' -}}
+        {{- '<tool_response>\n' + render_content(message['content']) + '\n</tool_response><|im_end|>\n' -}}
     {%- else -%}
-        {{- message['content'] + '<|im_end|>\n' -}}
+        {{- render_content(message['content']) + '<|im_end|>\n' -}}
     {%- endif -%}
 {%- endfor -%}
 {%- if add_generation_prompt -%}

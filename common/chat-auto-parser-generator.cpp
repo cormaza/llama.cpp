@@ -144,12 +144,14 @@ common_peg_parser analyze_reasoning::build_parser(parser_build_context & ctx) co
 
     if (mode == reasoning_mode::TAG_BASED || mode == reasoning_mode::TOOLS_ONLY) {
         if (!end.empty()) {
+            std::string trimmed_end = trim_whitespace(end);
             if (!start.empty()) {
-                // Standard tag-based: optional(<think>reasoning</think>)
-                return p.optional(p.optspace(start) + p.reasoning(p.until(trim_whitespace(end))) + p.optspace(end));
+                // Standard tag-based: allow repeated (<think>reasoning</think>) blocks and tolerate trailing end tags
+                auto single_block = p.optspace(start) + p.reasoning(p.until(trimmed_end)) + p.optspace(trimmed_end);
+                return p.repeat(single_block, 0, -1) + p.repeat(p.optspace(trimmed_end), 0, -1);
             }
             // Delimiter-style (empty start)
-            return p.optional(p.reasoning(p.until(trim_whitespace(end))) + p.optspace(end));
+            return p.optional(p.reasoning(p.until(trimmed_end)) + p.optspace(trimmed_end));
         }
     }
 
