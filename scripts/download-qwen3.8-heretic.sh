@@ -1,0 +1,1 @@
+download-qwen3.8-9b-heretic.sh
